@@ -836,10 +836,6 @@ const server = app.listen(port, '0.0.0.0', () => {
         console.warn('⚠️  Server will still work - menu will be loaded on first call');
       });
   }, 1000); // Wait 1 second after server starts
-    .catch((error) => {
-      console.error('⚠️  Failed to pre-load menu cache (will use default menu):', error.message);
-      console.log('📋 System will use default menu until cache is loaded');
-    });
 });
 
 // CRITICAL: Handle server errors without crashing
@@ -3709,24 +3705,34 @@ setInterval(() => {
   }
 }, 300000); // Run every 5 minutes
 
-// Initialize integrations on server start
-console.log('Initializing integrations...');
-(async () => {
-  try {
-    const initialized = await googleSheets.initializeGoogleSheets();
-    if (initialized) {
-      await googleSheets.initializeSheetHeaders();
-      console.log('✅ Google Sheets ready for logging');
-    } else {
-      console.warn('⚠️  Google Sheets not configured - orders will not be logged to Google Sheets');
-      console.warn('⚠️  To enable: Set GOOGLE_SHEETS_CREDENTIALS_PATH and GOOGLE_SHEETS_ID in .env');
+// Initialize integrations on server start (non-blocking)
+// Use setTimeout to ensure server starts even if integrations fail
+setTimeout(() => {
+  console.log('Initializing integrations...');
+  (async () => {
+    try {
+      const initialized = await googleSheets.initializeGoogleSheets();
+      if (initialized) {
+        await googleSheets.initializeSheetHeaders();
+        console.log('✅ Google Sheets ready for logging');
+      } else {
+        console.warn('⚠️  Google Sheets not configured - orders will not be logged to Google Sheets');
+        console.warn('⚠️  To enable: Set GOOGLE_SHEETS_CREDENTIALS_BASE64 and GOOGLE_SHEETS_ID in environment variables');
+      }
+    } catch (error) {
+      console.error('❌ Error initializing Google Sheets:', error);
+      console.error('❌ Orders will not be logged to Google Sheets until this is fixed');
+      console.error('❌ Server will continue running - this is non-critical');
     }
+  })();
+  
+  try {
+    posSystems.initializePOS();
   } catch (error) {
-    console.error('❌ Error initializing Google Sheets:', error);
-    console.error('❌ Orders will not be logged to Google Sheets until this is fixed');
+    console.error('❌ Error initializing POS systems:', error);
+    console.error('❌ Server will continue running - this is non-critical');
   }
-})();
-posSystems.initializePOS();
+}, 500); // Wait 500ms after server starts to initialize integrations
 
 console.log('WebSocket server ready');
 console.log(`Ready to accept calls. Configure your Twilio number to: https://your-domain/incoming-call`);
