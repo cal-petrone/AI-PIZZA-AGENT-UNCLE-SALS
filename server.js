@@ -2068,7 +2068,7 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                       console.error(`❌ This will cause the order to have $0.00 total`);
                       console.error(`❌ Menu structure may be incorrect or item not properly configured`);
                       // Don't add item - it will cause price calculation issues
-                      break;
+                      return; // Exit early - don't add item
                     }
                     
                     // Check if item already exists to prevent duplicates
@@ -3033,7 +3033,7 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                           console.error('❌ The AI must ask for and collect the customer name BEFORE calling confirm_order');
                           console.error('❌ Order will NOT be logged until name is provided');
                           // Don't log - wait for name to be collected
-                          break;
+                          return; // Use return instead of break in setTimeout callback
                         }
                         
                         if (!hasDeliveryMethod) {
@@ -3041,7 +3041,7 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                           console.error('❌ The AI must ask for pickup/delivery BEFORE calling confirm_order');
                           console.error('❌ Order will NOT be logged until delivery method is provided');
                           // Don't log - wait for delivery method to be collected
-                          break;
+                          return; // Use return instead of break in setTimeout callback
                         }
                         
                         if (!hasAddress) {
@@ -3049,7 +3049,7 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                           console.error('❌ The AI must ask for and collect the delivery address BEFORE calling confirm_order');
                           console.error('❌ Order will NOT be logged until address is provided');
                           // Don't log - wait for address to be collected
-                          break;
+                          return; // Use return instead of break in setTimeout callback
                         }
                         
                         if (!hasValidItems || !allItemsHavePrices) {
@@ -3057,7 +3057,7 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                           console.error('❌ All items must have names and prices');
                           console.error('❌ Valid items:', validItems.length, '| Items with prices:', validItems.filter(i => (i.price || 0) > 0).length);
                           // Don't log - items are invalid
-                          break;
+                          return; // Use return instead of break in setTimeout callback
                         }
                         
                         if (validItems.length > 0) {
