@@ -3331,13 +3331,16 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
             const hasMessage = outputItems.some(item => item.type === 'message');
             
             // CRITICAL: If response failed and it was a delivery/name/address confirmation, we MUST retry
+            let isCriticalConfirmation = false;
             if (responseFailed) {
               const currentOrder = activeOrders.get(streamSid);
               const isDeliveryConfirmation = currentOrder?.deliveryMethod && !currentOrder?.address && currentOrder?.deliveryMethod === 'delivery';
               const isNameConfirmation = !currentOrder?.customerName;
               const isAddressConfirmation = currentOrder?.deliveryMethod === 'delivery' && !currentOrder?.address;
               
-              if (isDeliveryConfirmation || isNameConfirmation || isAddressConfirmation) {
+              isCriticalConfirmation = isDeliveryConfirmation || isNameConfirmation || isAddressConfirmation;
+              
+              if (isCriticalConfirmation) {
                 console.error('🚨🚨🚨 CRITICAL: Response failed during confirmation - MUST retry to prevent silence!');
                 console.error('🚨 Context:', { isDeliveryConfirmation, isNameConfirmation, isAddressConfirmation, responseStatus: data.response?.status });
                 // Don't reset responseInProgress yet - let the failed handler retry
@@ -3383,7 +3386,7 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
             
             // CRITICAL: Only reset responseInProgress if response didn't fail, or if it failed but wasn't a critical confirmation
             // If it was a critical confirmation failure, the failed handler will manage responseInProgress
-            if (!responseFailed || (!isDeliveryConfirmation && !isNameConfirmation && !isAddressConfirmation)) {
+            if (!responseFailed || !isCriticalConfirmation) {
               responseInProgress = false; // Mark that response is complete, ready for next one
               console.log('✓ responseInProgress reset to false');
             } else {
