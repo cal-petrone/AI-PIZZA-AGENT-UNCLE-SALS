@@ -262,29 +262,68 @@ async function fetchMenuFromGoogleSheets() {
     // Use existing Google Sheets client if available, or create new one
     const { google } = require('googleapis');
     const path = require('path');
+    const fs = require('fs');
     
     const credentialsPath = process.env.GOOGLE_SHEETS_CREDENTIALS_PATH;
-    if (!credentialsPath) {
-      console.warn('⚠️  GOOGLE_SHEETS_CREDENTIALS_PATH not set, using default menu');
+    const credentialsBase64 = process.env.GOOGLE_SHEETS_CREDENTIALS_BASE64;
+    
+    if (!credentialsPath && !credentialsBase64) {
+      console.warn('⚠️  GOOGLE_SHEETS_CREDENTIALS_PATH or GOOGLE_SHEETS_CREDENTIALS_BASE64 not set, using default menu');
       return getDefaultMenuData();
     }
 
-    const credentialsAbsolutePath = path.isAbsolute(credentialsPath)
-      ? credentialsPath
-      : path.resolve(__dirname, credentialsPath.replace(/^\.\//, ''));
+    let auth;
+    
+    // Option 1: Use base64 encoded credentials (for Railway/cloud deployments)
+    if (credentialsBase64) {
+      try {
+        // Clean the base64 string: remove whitespace, newlines, and any trailing characters
+        const cleanedBase64 = credentialsBase64.trim().replace(/\s/g, '').replace(/[^A-Za-z0-9+/=]/g, '');
+        
+        if (!cleanedBase64 || cleanedBase64.length < 100) {
+          console.warn('⚠️  Base64 credentials string is too short, using default menu');
+          return getDefaultMenuData();
+        }
+        
+        const credentialsJson = Buffer.from(cleanedBase64, 'base64').toString('utf-8');
+        const credentials = JSON.parse(credentialsJson);
+        
+        auth = new google.auth.GoogleAuth({
+          credentials: credentials,
+          scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+        });
+      } catch (error) {
+        console.error('❌ Failed to parse base64 credentials for menu:', error.message);
+        console.warn('⚠️  Using default menu as fallback');
+        return getDefaultMenuData();
+      }
+    }
+    // Option 2: Use file path (for local development)
+    else if (credentialsPath) {
+      const credentialsAbsolutePath = path.isAbsolute(credentialsPath)
+        ? credentialsPath
+        : path.resolve(__dirname, credentialsPath.replace(/^\.\//, ''));
 
-    const auth = new google.auth.GoogleAuth({
-      keyFile: credentialsAbsolutePath,
-      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
-    });
+      if (!fs.existsSync(credentialsAbsolutePath)) {
+        console.warn('⚠️  Credentials file not found, using default menu');
+        return getDefaultMenuData();
+      }
+
+      auth = new google.auth.GoogleAuth({
+        keyFile: credentialsAbsolutePath,
+        scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+      });
+    }
 
     const sheets = google.sheets({ version: 'v4', auth });
 
     // Fetch menu data (assuming it's in a sheet named "Menu" or "Sheet1")
     const sheetName = process.env.GOOGLE_SHEETS_MENU_SHEET || 'Menu';
-    const range = `${sheetName}!A2:E1000`; // Skip header row, get up to 1000 items
+    // Use a large explicit range to get ALL menu items (up to 1000 rows)
+    // Google Sheets API may limit results with open-ended ranges, so we use an explicit upper bound
+    const range = `${sheetName}!A2:E1000`; // Skip header row, get rows 2-1000 in columns A-E
 
-    console.log(`📋 Fetching menu from Google Sheets: ${menuSheetId}, range: ${range}`);
+    console.log(`📋 Fetching menu from Google Sheets: ${menuSheetId}, sheet: ${sheetName}, range: ${range}`);
     
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: menuSheetId,
@@ -298,7 +337,12 @@ async function fetchMenuFromGoogleSheets() {
       return getDefaultMenuData();
     }
 
-    console.log(`📋 Found ${rows.length} rows in Google Sheets`);
+    console.log(`📋 Found ${rows.length} rows in Google Sheets (before parsing)`);
+    
+    // Check if we might have hit a limit (if exactly 1000 rows, might be more)
+    if (rows.length >= 1000) {
+      console.warn('⚠️  WARNING: Fetched 1000 rows - menu might be truncated! Consider increasing the range limit.');
+    }
     
     // Parse menu data
     const menuData = parseMenuFromSheets(rows);
