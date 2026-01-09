@@ -84,6 +84,22 @@ process.on('SIGINT', () => {
   // The server will stay running until PM2 explicitly kills it
 });
 
+// Keep process alive - prevent accidental termination
+process.on('exit', (code) => {
+  console.log(`⚠️  Process exiting with code: ${code}`);
+});
+
+const express = require('express');
+const WebSocket = require('ws');
+const twilio = require('twilio');
+
+// Import integrations
+const googleSheets = require('./integrations/google-sheets');
+const posSystems = require('./integrations/pos-systems');
+
+const app = express();
+const port = process.env.PORT || 3000;
+
 // CRITICAL: Health check endpoint for PM2 and monitoring
 // This allows PM2 to verify the server is responding, even if ngrok is down
 app.get('/health', (req, res) => {
@@ -102,22 +118,6 @@ app.get('/', (req, res) => {
     timestamp: new Date().toISOString()
   });
 });
-
-// Keep process alive - prevent accidental termination
-process.on('exit', (code) => {
-  console.log(`⚠️  Process exiting with code: ${code}`);
-});
-
-const express = require('express');
-const WebSocket = require('ws');
-const twilio = require('twilio');
-
-// Import integrations
-const googleSheets = require('./integrations/google-sheets');
-const posSystems = require('./integrations/pos-systems');
-
-const app = express();
-const port = process.env.PORT || 3000;
 
 // CRITICAL: Parse Twilio POST request body (form-encoded)
 app.use(express.urlencoded({ extended: true }));
