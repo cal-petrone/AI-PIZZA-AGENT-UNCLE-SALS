@@ -40,14 +40,66 @@ async function initializeGoogleSheets() {
     if (credentialsBase64) {
       console.log('📁 Loading Google Sheets credentials from base64 environment variable');
       try {
-        const credentialsJson = Buffer.from(credentialsBase64, 'base64').toString('utf-8');
-        const credentials = JSON.parse(credentialsJson);
+        // Clean the base64 string: remove whitespace, newlines, and any trailing characters
+        const cleanedBase64 = credentialsBase64.trim().replace(/\s/g, '').replace(/[^A-Za-z0-9+/=]/g, '');
+        
+        // Validate base64 string is not empty
+        if (!cleanedBase64 || cleanedBase64.length < 100) {
+          console.error('✗ Base64 credentials string is too short or empty');
+          console.error('✗ Expected: Long base64 string (1000+ characters)');
+          console.error('✗ Got:', cleanedBase64 ? `${cleanedBase64.length} characters` : 'empty');
+          return false;
+        }
+        
+        // Decode base64
+        let credentialsJson;
+        try {
+          credentialsJson = Buffer.from(cleanedBase64, 'base64').toString('utf-8');
+        } catch (decodeError) {
+          console.error('✗ Failed to decode base64 string:', decodeError.message);
+          console.error('✗ Base64 string may be corrupted or incomplete');
+          console.error('✗ First 50 chars of base64:', cleanedBase64.substring(0, 50));
+          console.error('✗ Last 50 chars of base64:', cleanedBase64.substring(cleanedBase64.length - 50));
+          return false;
+        }
+        
+        // Validate JSON structure
+        if (!credentialsJson || credentialsJson.trim().length === 0) {
+          console.error('✗ Decoded base64 string is empty');
+          return false;
+        }
+        
+        // Parse JSON
+        let credentials;
+        try {
+          credentials = JSON.parse(credentialsJson);
+        } catch (parseError) {
+          console.error('✗ Failed to parse JSON from decoded base64:', parseError.message);
+          console.error('✗ JSON error position:', parseError.message.match(/position (\d+)/)?.[1] || 'unknown');
+          console.error('✗ First 200 chars of decoded JSON:', credentialsJson.substring(0, 200));
+          console.error('✗ Last 200 chars of decoded JSON:', credentialsJson.substring(Math.max(0, credentialsJson.length - 200)));
+          return false;
+        }
+        
+        // Validate required credential fields
+        const requiredFields = ['type', 'project_id', 'private_key', 'client_email', 'client_id'];
+        const missingFields = requiredFields.filter(field => !credentials[field]);
+        if (missingFields.length > 0) {
+          console.error('✗ Missing required credential fields:', missingFields.join(', '));
+          console.error('✗ Available fields:', Object.keys(credentials).join(', '));
+          return false;
+        }
+        
+        // Create auth
         auth = new google.auth.GoogleAuth({
           credentials: credentials,
           scopes: ['https://www.googleapis.com/auth/spreadsheets'],
         });
+        
+        console.log('✓ Base64 credentials decoded and validated successfully');
       } catch (error) {
-        console.error('✗ Failed to parse base64 credentials:', error.message);
+        console.error('✗ Failed to process base64 credentials:', error.message);
+        console.error('✗ Error stack:', error.stack?.substring(0, 500));
         return false;
       }
     } 
