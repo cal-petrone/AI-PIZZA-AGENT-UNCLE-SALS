@@ -41,9 +41,6 @@ validateEnvironment();
 
 // Handle uncaught exceptions - prevent server crashes
 process.on('uncaughtException', (error) => {
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:17',message:'Uncaught exception',data:{error:error.message,stack:error.stack?.substring(0,300)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-  // #endregion
   console.error('🚨🚨🚨 UNCAUGHT EXCEPTION - CRITICAL ERROR 🚨🚨🚨');
   console.error('Error:', error.message);
   console.error('Stack:', error.stack);
@@ -58,9 +55,6 @@ process.on('uncaughtException', (error) => {
 
 // Handle unhandled promise rejections - prevent server crashes
 process.on('unhandledRejection', (reason, promise) => {
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:26',message:'Unhandled rejection',data:{reason:String(reason)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-  // #endregion
   console.error('🚨🚨🚨 UNHANDLED REJECTION - CRITICAL ERROR 🚨🚨🚨');
   console.error('Reason:', reason);
   console.error('Promise:', promise);
@@ -821,22 +815,27 @@ wss.on('error', (error) => {
 // ============================================================================
 // START SERVER WITH COMPREHENSIVE ERROR HANDLING
 // ============================================================================
-const server = app.listen(port, () => {
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:332',message:'Server started successfully',data:{port:port,pid:process.pid,uptime:process.uptime(),nodeVersion:process.version},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-  // #endregion
+const server = app.listen(port, '0.0.0.0', () => {
   console.log(`✅✅✅ SERVER RUNNING ON PORT ${port} - PERMANENT MODE ENABLED ✅✅✅`);
   console.log(`🛡️  Global error handlers active - server will NEVER crash`);
-  console.log(`📊 Health check available at: http://localhost:${port}/health`);
-  console.log(`💓 Keep-alive endpoint: http://localhost:${port}/keepalive`);
+  console.log(`📊 Health check available at: http://0.0.0.0:${port}/health`);
+  console.log(`💓 Keep-alive endpoint: http://0.0.0.0:${port}/keepalive`);
+  console.log(`🌐 Server listening on all interfaces (0.0.0.0) for Railway deployment`);
   
   // CRITICAL: Pre-load menu cache on startup to avoid delays on first call
-  console.log('📋 Pre-loading menu cache for faster connection...');
-  fetchMenuFromGoogleSheets()
-    .then((menuData) => {
-      console.log('✅ Menu cache pre-loaded successfully');
-      console.log(`📋 Cached menu contains ${Object.keys(menuData?.menu || {}).length} items`);
-    })
+  // Use setTimeout to ensure this doesn't block server startup
+  setTimeout(() => {
+    console.log('📋 Pre-loading menu cache for faster connection...');
+    fetchMenuFromGoogleSheets()
+      .then((menuData) => {
+        console.log('✅ Menu cache pre-loaded successfully');
+        console.log(`📋 Cached menu contains ${Object.keys(menuData?.menu || {}).length} items`);
+      })
+      .catch((error) => {
+        console.warn('⚠️  Failed to pre-load menu cache (non-critical):', error.message);
+        console.warn('⚠️  Server will still work - menu will be loaded on first call');
+      });
+  }, 1000); // Wait 1 second after server starts
     .catch((error) => {
       console.error('⚠️  Failed to pre-load menu cache (will use default menu):', error.message);
       console.log('📋 System will use default menu until cache is loaded');
@@ -3729,8 +3728,5 @@ console.log('Initializing integrations...');
 })();
 posSystems.initializePOS();
 
-// #region agent log
-fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2537',message:'WebSocket server initialized',data:{wssReady:true,port:port},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-// #endregion
 console.log('WebSocket server ready');
 console.log(`Ready to accept calls. Configure your Twilio number to: https://your-domain/incoming-call`);
