@@ -2966,28 +2966,75 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                       });
                       
                       if (confirmedOrder && confirmedOrder.confirmed && !confirmedOrder.logged && confirmedOrder.items && confirmedOrder.items.length > 0) {
-                        const validItems = confirmedOrder.items.filter(item => item.name && item.name.length > 0);
+                        const validItems = confirmedOrder.items.filter(item => item.name && item.name.length > 0 && (item.price || 0) > 0);
+                        
+                        // CRITICAL: Validate ALL required fields before logging
+                        const hasName = !!confirmedOrder.customerName && confirmedOrder.customerName.trim().length > 0;
+                        const hasDeliveryMethod = !!confirmedOrder.deliveryMethod;
+                        const hasAddress = confirmedOrder.deliveryMethod !== 'delivery' || (!!confirmedOrder.address && confirmedOrder.address.trim().length > 0);
+                        const hasValidItems = validItems.length > 0;
+                        const allItemsHavePrices = validItems.every(item => (item.price || 0) > 0);
+                        
+                        console.log('🔍🔍🔍 VALIDATION CHECK BEFORE LOGGING:');
+                        console.log('🔍 Has name:', hasName, '| Name:', confirmedOrder.customerName || 'MISSING');
+                        console.log('🔍 Has delivery method:', hasDeliveryMethod, '| Method:', confirmedOrder.deliveryMethod || 'MISSING');
+                        console.log('🔍 Has address (if needed):', hasAddress, '| Address:', confirmedOrder.address || 'MISSING');
+                        console.log('🔍 Has valid items:', hasValidItems, '| Items count:', validItems.length);
+                        console.log('🔍 All items have prices:', allItemsHavePrices);
+                        
+                        if (!hasName) {
+                          console.error('❌❌❌ CANNOT LOG - NAME IS MISSING ❌❌❌');
+                          console.error('❌ The AI must ask for and collect the customer name BEFORE calling confirm_order');
+                          console.error('❌ Order will NOT be logged until name is provided');
+                          // Don't log - wait for name to be collected
+                          break;
+                        }
+                        
+                        if (!hasDeliveryMethod) {
+                          console.error('❌❌❌ CANNOT LOG - DELIVERY METHOD IS MISSING ❌❌❌');
+                          console.error('❌ The AI must ask for pickup/delivery BEFORE calling confirm_order');
+                          console.error('❌ Order will NOT be logged until delivery method is provided');
+                          // Don't log - wait for delivery method to be collected
+                          break;
+                        }
+                        
+                        if (!hasAddress) {
+                          console.error('❌❌❌ CANNOT LOG - ADDRESS IS MISSING FOR DELIVERY ❌❌❌');
+                          console.error('❌ The AI must ask for and collect the delivery address BEFORE calling confirm_order');
+                          console.error('❌ Order will NOT be logged until address is provided');
+                          // Don't log - wait for address to be collected
+                          break;
+                        }
+                        
+                        if (!hasValidItems || !allItemsHavePrices) {
+                          console.error('❌❌❌ CANNOT LOG - ITEMS ARE INVALID OR MISSING PRICES ❌❌❌');
+                          console.error('❌ All items must have names and prices');
+                          console.error('❌ Valid items:', validItems.length, '| Items with prices:', validItems.filter(i => (i.price || 0) > 0).length);
+                          // Don't log - items are invalid
+                          break;
+                        }
+                        
                         if (validItems.length > 0) {
+                          console.log('✅✅✅ ALL VALIDATION PASSED - LOGGING ORDER ✅✅✅');
                           console.log('📝 Order confirmed - logging to Google Sheets...');
                           console.log('📋 Confirmed order details (FINAL STATE - THIS IS WHAT WILL BE LOGGED):', {
                             totalItems: confirmedOrder.items.length,
                             validItems: validItems.length,
-                            itemsList: validItems.map(i => `${i.quantity}x ${i.name}`).join(', '),
-                            customerName: confirmedOrder.customerName || 'NOT SET - WILL LOG AS "not provided"',
-                            deliveryMethod: confirmedOrder.deliveryMethod || 'NOT SET - WILL LOG AS "not specified"',
-                            address: confirmedOrder.address || 'NOT SET - WILL LOG WITHOUT ADDRESS',
-                            customerPhone: confirmedOrder.customerPhone || 'NOT SET'
+                            itemsList: validItems.map(i => `${i.quantity}x ${i.name} @ $${(i.price || 0).toFixed(2)}`).join(', '),
+                            customerName: confirmedOrder.customerName,
+                            deliveryMethod: confirmedOrder.deliveryMethod,
+                            address: confirmedOrder.address || 'N/A (pickup)',
+                            customerPhone: confirmedOrder.customerPhone || 'not provided'
                           });
                           
                           // CRITICAL DEBUG: Show exact values that will be sent to Google Sheets
                           console.log('🔍🔍🔍 EXACT VALUES FOR GOOGLE SHEETS:');
-                          console.log('🔍 Column A (Name):', confirmedOrder.customerName || 'not provided');
+                          console.log('🔍 Column A (Name):', confirmedOrder.customerName);
                           console.log('🔍 Column B (Phone):', confirmedOrder.customerPhone || 'not provided');
-                          console.log('🔍 Column C (Pick Up/Delivery):', confirmedOrder.deliveryMethod || 'not specified');
-                          console.log('🔍 Address:', confirmedOrder.address || 'none');
-                          console.log('🔍 Delivery display will be:', confirmedOrder.deliveryMethod === 'delivery' && confirmedOrder.address 
+                          console.log('🔍 Column C (Pick Up/Delivery):', confirmedOrder.deliveryMethod === 'delivery' && confirmedOrder.address 
                             ? `delivery - ${confirmedOrder.address}` 
-                            : (confirmedOrder.deliveryMethod || 'not specified'));
+                            : confirmedOrder.deliveryMethod);
+                          console.log('🔍 Address:', confirmedOrder.address || 'N/A (pickup)');
                           
                           // CRITICAL: Use ALL valid items
                           confirmedOrder.logged = true;
