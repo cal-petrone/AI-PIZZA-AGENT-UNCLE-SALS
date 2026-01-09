@@ -2714,14 +2714,30 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                               // #endregion
                               if (sendResult) {
                                 console.log('✓ Response creation sent IMMEDIATELY after delivery method set');
-                                // Reset flag after a short delay to allow response to start
+                                // CRITICAL: Don't reset responseInProgress immediately - wait for response to actually start
+                                // Set a longer timeout to check if response actually started
                                 setTimeout(() => {
-                                  responseInProgress = false;
-                                }, 100);
+                                  // Check if response actually started (responseInProgress should still be true if it did)
+                                  // If it's false, the response might have failed
+                                  if (!responseInProgress) {
+                                    console.warn('⚠️  Response creation sent but responseInProgress is false - response may have failed');
+                                    // Retry if we haven't exceeded max retries
+                                    if (deliveryRetryCount < maxDeliveryRetries - 1) {
+                                      deliveryRetryCount++;
+                                      console.log('🔄 Retrying delivery response due to potential failure');
+                                      ensureDeliveryResponse();
+                                    }
+                                  } else {
+                                    // Response started successfully, reset after it completes
+                                    setTimeout(() => {
+                                      responseInProgress = false;
+                                    }, 500);
+                                  }
+                                }, 500);
                               } else {
                                 console.error('❌ Failed to create response after delivery method');
                                 // #region agent log
-                                fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2634',message:'safeSendToOpenAI FAILED - will retry',data:{retryCount:deliveryRetryCount,maxRetries:maxDeliveryRetries},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B'})}).catch(()=>{});
+                                fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2722',message:'safeSendToOpenAI FAILED - will retry',data:{retryCount:deliveryRetryCount,maxRetries:maxDeliveryRetries},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B'})}).catch(()=>{});
                                 // #endregion
                                 // Retry faster if we haven't exceeded max retries
                                 if (deliveryRetryCount < maxDeliveryRetries - 1) {
@@ -2729,6 +2745,7 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                                   ensureDeliveryResponse();
                                 } else {
                                   responseInProgress = false;
+                                  console.error('❌ Max retries reached - delivery confirmation may be silent');
                                 }
                               }
                             } catch (error) {
@@ -3380,9 +3397,9 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                 
                 if (isRateLimit) {
                   // #region agent log
-                  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:3254',message:'RATE LIMIT ERROR DETECTED',data:{errorMessage:errorDetails.message,streamSid:streamSid},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
+                  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:3381',message:'RATE LIMIT ERROR DETECTED in response.done',data:{errorMessage:errorDetails.message,streamSid:streamSid,responseId:data.response?.id},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
                   // #endregion
-                  console.error('\n🚨🚨🚨 RATE LIMIT ERROR DETECTED 🚨🚨🚨');
+                  console.error('\n🚨🚨🚨 RATE LIMIT ERROR DETECTED - RESPONSE FAILED 🚨🚨🚨');
                   console.error('OpenAI API rate limit exceeded - this causes delays and silence!');
                   console.error('Error message:', errorDetails.message);
                   
@@ -3394,28 +3411,69 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                     console.error(`⏳ Will retry after ${waitTime}ms (${waitTime/1000}s)`);
                   }
                   
+                  // CRITICAL: Check if this was a delivery/name/address confirmation that failed
+                  // If so, we need to retry more aggressively
+                  const currentOrder = activeOrders.get(streamSid);
+                  const isDeliveryConfirmation = currentOrder?.deliveryMethod && !currentOrder?.address && currentOrder?.deliveryMethod === 'delivery';
+                  const isNameConfirmation = !currentOrder?.customerName;
+                  const isAddressConfirmation = currentOrder?.deliveryMethod === 'delivery' && !currentOrder?.address;
+                  
+                  if (isDeliveryConfirmation || isNameConfirmation || isAddressConfirmation) {
+                    console.error('🚨 CRITICAL: Rate limit hit during confirmation - MUST retry to prevent silence!');
+                    console.error('🚨 Context:', { isDeliveryConfirmation, isNameConfirmation, isAddressConfirmation });
+                  }
+                  
                   // Retry the response creation after rate limit clears
                   setTimeout(() => {
-                    if (openaiClient && openaiClient.readyState === WebSocket.OPEN && streamSid === sid && !userIsSpeaking) {
+                    if (openaiClient && openaiClient.readyState === WebSocket.OPEN && streamSid === sid) {
                       // #region agent log
-                      fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:3270',message:'Retrying after rate limit',data:{waitTime:waitTime,streamSid:streamSid,responseInProgress:responseInProgress},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
+                      fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:3400',message:'Retrying after rate limit',data:{waitTime:waitTime,streamSid:streamSid,responseInProgress:responseInProgress,userIsSpeaking:userIsSpeaking,isDeliveryConfirmation,isNameConfirmation,isAddressConfirmation},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
                       // #endregion
                       console.log('✓ Retrying response creation after rate limit cleared');
                       responseInProgress = false; // Clear flag to allow retry
-                      const retryResponsePayload = {
-                        type: 'response.create',
-                        response: {
-                          modalities: ['audio', 'text']
-                        }
-                      };
                       
-                      if (safeSendToOpenAI(retryResponsePayload, 'response.create (rate limit retry)')) {
-                        responseInProgress = true;
-                        console.log('✓ Retry response creation sent after rate limit');
+                      // CRITICAL: For delivery/name/address confirmations, retry even if user is speaking
+                      // This ensures we don't go silent during critical moments
+                      if (!userIsSpeaking || isDeliveryConfirmation || isNameConfirmation || isAddressConfirmation) {
+                        const retryResponsePayload = {
+                          type: 'response.create',
+                          response: {
+                            modalities: ['audio', 'text']
+                          }
+                        };
+                        
+                        if (safeSendToOpenAI(retryResponsePayload, 'response.create (rate limit retry)')) {
+                          responseInProgress = true;
+                          console.log('✓ Retry response creation sent after rate limit');
+                          
+                          // If this was a critical confirmation, also trigger the specific handler
+                          if (isDeliveryConfirmation) {
+                            console.log('🚨 Re-triggering delivery confirmation handler after rate limit retry');
+                            // The response will be created, and the AI should ask for address
+                          }
+                        } else {
+                          console.error('❌ Failed to retry response creation after rate limit');
+                          responseInProgress = false;
+                          
+                          // If critical confirmation failed, try one more time
+                          if (isDeliveryConfirmation || isNameConfirmation || isAddressConfirmation) {
+                            console.error('🚨 CRITICAL: Retry failed for confirmation - attempting one more time in 2 seconds');
+                            setTimeout(() => {
+                              if (openaiClient && openaiClient.readyState === WebSocket.OPEN && streamSid === sid) {
+                                responseInProgress = false;
+                                if (safeSendToOpenAI(retryResponsePayload, 'response.create (rate limit retry - second attempt)')) {
+                                  responseInProgress = true;
+                                  console.log('✓ Second retry attempt sent');
+                                }
+                              }
+                            }, 2000);
+                          }
+                        }
                       } else {
-                        console.error('❌ Failed to retry response creation after rate limit');
-                        responseInProgress = false;
+                        console.log('⚠️  User is speaking - will retry when they finish');
                       }
+                    } else {
+                      console.error('❌ Cannot retry - OpenAI client not ready or streamSid mismatch');
                     }
                   }, waitTime);
                   
