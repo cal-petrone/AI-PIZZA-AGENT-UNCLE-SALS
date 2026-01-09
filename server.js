@@ -1111,27 +1111,42 @@ wss.on('connection', (ws, req) => {
         case 'stop':
           console.log('Stream stopped:', streamSid);
           
-          // Final check: Log order if it has items but wasn't logged yet
-          // CRITICAL: Log orders with items even if missing some info - user wants all orders logged
-          if (order && order.items.length > 0 && !order.logged) {
-            console.log('📝 Stream ending - checking if order should be logged...');
+          // CRITICAL: Only log orders that are COMPLETE and CONFIRMED
+          // DO NOT log incomplete orders - this causes "mystery rows" and wrong data
+          if (order && order.items.length > 0 && !order.logged && order.confirmed) {
+            console.log('📝 Stream ending - checking if COMPLETE order should be logged...');
             console.log('Order status - confirmed:', order.confirmed, 'items:', order.items.length);
             
-            // Validate items before logging
-            const validItems = order.items.filter(item => item.name && item.name.length > 0);
+            // CRITICAL: Validate ALL required fields before logging
+            const hasName = !!order.customerName && order.customerName.trim().length > 0;
+            const hasDeliveryMethod = !!order.deliveryMethod;
+            const hasAddress = order.deliveryMethod !== 'delivery' || (!!order.address && order.address.trim().length > 0);
+            const validItems = order.items.filter(item => item.name && item.name.length > 0 && (item.price || 0) > 0);
+            const hasValidItems = validItems.length > 0;
             
-            if (validItems.length > 0) {
-              console.log('✅ Order has valid items - logging to Google Sheets');
+            console.log('🔍 Stream end validation:', {
+              hasName,
+              hasDeliveryMethod,
+              hasAddress,
+              hasValidItems,
+              customerName: order.customerName || 'MISSING',
+              deliveryMethod: order.deliveryMethod || 'MISSING',
+              address: order.address || 'MISSING',
+              customerPhone: order.customerPhone || 'MISSING'
+            });
+            
+            // ONLY log if ALL required data is present
+            if (hasName && hasDeliveryMethod && hasAddress && hasValidItems) {
+              console.log('✅ Order is COMPLETE - logging to Google Sheets');
               console.log('📋 Order details:', {
                 items: validItems.length,
                 itemsList: validItems.map(i => `${i.quantity}x ${i.name}`).join(', '),
-                deliveryMethod: order.deliveryMethod || 'not specified',
-                customerName: order.customerName || 'not provided',
-                customerPhone: order.customerPhone || order.from || 'unknown'
+                deliveryMethod: order.deliveryMethod,
+                customerName: order.customerName,
+                customerPhone: order.customerPhone || 'not provided',
+                address: order.address || 'N/A'
               });
               
-              // Auto-confirm and log - user wants ALL orders logged
-              order.confirmed = true;
               order.logged = true;
               activeOrders.set(streamSid, order);
               logOrder(order, storeConfig || {}).catch(error => {
@@ -1141,9 +1156,17 @@ wss.on('connection', (ws, req) => {
                 activeOrders.set(streamSid, order);
               });
             } else {
-              console.warn('⚠️  Order has no valid items - skipping log');
-              console.warn('⚠️  Order items:', JSON.stringify(order.items, null, 2));
+              console.warn('⚠️  Order is INCOMPLETE - NOT logging to prevent wrong data');
+              console.warn('⚠️  Missing:', {
+                name: !hasName,
+                deliveryMethod: !hasDeliveryMethod,
+                address: !hasAddress,
+                validItems: !hasValidItems
+              });
+              console.warn('⚠️  Incomplete orders are NOT logged to prevent mystery rows and wrong data');
             }
+          } else if (order && order.items.length > 0 && !order.confirmed) {
+            console.warn('⚠️  Order has items but was never confirmed - NOT logging');
           }
           
           // Clear audio buffer timer
