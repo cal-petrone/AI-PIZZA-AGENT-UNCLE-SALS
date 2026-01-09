@@ -1380,9 +1380,9 @@ wss.on('connection', (ws, req) => {
           // Note: output_audio_transcription is not a valid parameter
           turn_detection: {
             type: 'server_vad',
-            threshold: 0.7, // Optimized: Lower threshold (0.7) - faster response detection while preventing interruptions
-            prefix_padding_ms: 300,  // Optimized: Reduced padding (300ms) - faster response while preventing cut-offs
-            silence_duration_ms: 800  // CRITICAL: Reduced to 800ms for faster, more natural responses - maintains natural flow without interruptions
+            threshold: 0.6, // Optimized: Lower threshold (0.6) - even faster response detection while preventing interruptions
+            prefix_padding_ms: 250,  // Optimized: Reduced padding (250ms) - faster response while preventing cut-offs
+            silence_duration_ms: 500  // CRITICAL: Reduced to 500ms for SUPER FAST, natural responses - maintains natural flow without interruptions
           },
           temperature: 0.7,  // Slightly lower for faster, more focused responses
           max_response_output_tokens: 256,  // Increased to allow complete sentences (was 64 - too short, cut off mid-sentence)
@@ -1608,10 +1608,10 @@ INSTRUCTIONS (CRITICAL - FOLLOW THESE FOR EVERY CALL):
    - When the customer confirms the order (says "yes", "sounds good", "that's correct", "yep", "perfect", etc. after you give the total), you MUST:
      * First: Give pickup/delivery time estimate: "Perfect. Ready in about 20 minutes." (pickup) or "Perfect. 30-45 minutes for delivery." (delivery)
      * Then: Call the confirm_order tool (this logs the order)
-     * Then: AFTER the order is confirmed and logged, say the final ending message: "Awesome, thank you so much for ordering with us today." or "Awesome, thanks so much for your order today." or "Thank you so much for ordering with us today."
+     * Then: AFTER the order is confirmed and logged, say the final ending message: "Awesome, thank you so much for ordering with Uncle Sal's today!" or "Awesome, thanks so much for your order at Uncle Sal's today!" or "Thank you so much for ordering with Uncle Sal's today!"
    - **🚨 CRITICAL: When giving the total, ONLY say the final total price (which already includes tax). Do NOT break it down into subtotal and tax. Just say "Total is $X.XX." or "That'll be $X.XX." - keep it simple.**
-   - **🚨 CRITICAL: "Awesome, thank you so much for ordering with us today." must ONLY be said at the very end of the call, AFTER everything is complete (name, items, delivery method, address, confirmation, and order is logged via confirm_order tool). This is the final message before the call ends. Do NOT say it earlier in the conversation. The sequence must be: 1) Customer confirms order → 2) Give time estimate → 3) Call confirm_order tool → 4) Say "Awesome, thank you so much for ordering with us today." → 5) END CALL**
-18. **🚨 ENDING RULE - MANDATORY: After you say "Awesome, thank you so much for ordering with us today." (or similar), STOP immediately. Do NOT continue talking. The call is over.**
+   - **🚨 CRITICAL: "Awesome, thank you so much for ordering with Uncle Sal's today!" must ONLY be said at the very end of the call, AFTER everything is complete (name, items, delivery method, address, confirmation, and order is logged via confirm_order tool). This is the final message before the call ends. Do NOT say it earlier in the conversation. The sequence must be: 1) Customer confirms order → 2) Give time estimate → 3) Call confirm_order tool → 4) Say "Awesome, thank you so much for ordering with Uncle Sal's today!" → 5) END CALL**
+18. **🚨 ENDING RULE - MANDATORY: After you say "Awesome, thank you so much for ordering with Uncle Sal's today!" (or similar), STOP immediately. Do NOT continue talking. The call is over.**
 18. **🚨🚨🚨 CRITICAL - NEVER SAY GOODBYE ON ERROR: If an error occurs, NEVER say "goodbye", "goodbye and thank you", "sorry for the error", or end the call. NEVER mention errors to the customer. Continue taking the order normally. Say something helpful like "What would you like to order?" or "What else can I get you?" to continue the conversation. Errors are handled silently - the customer should NEVER hear about them. The call must continue no matter what.**
 19. **Be concise and realistic - like a real busy pizza place. Quick, efficient, not chatty.**
 20. **🚨 CRITICAL ORDER FLOW RULE: Check the current order state before asking questions. If order already has items and you're asking for name or delivery method, do NOT ask "What would you like to order?" again. Continue naturally with the next step of the order process. The greeting "What would you like to order?" should ONLY be said once at the very start of the call.**
@@ -2556,9 +2556,29 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                     });
                     
                     if (toolCall.input?.method) {
-                      currentOrder.deliveryMethod = toolCall.input.method;
-                      console.log('✅ Set delivery method:', toolCall.input.method);
-                      activeOrders.set(streamSid, currentOrder);
+                      // CRITICAL: Validate delivery method is valid - prevent mystery rows
+                      const methodValue = String(toolCall.input.method).trim().toLowerCase();
+                      
+                      // CRITICAL: Reject any numeric values (like ZIP codes "46031") - these are NOT valid delivery methods
+                      if (/^\d+$/.test(methodValue) && methodValue.length > 2) {
+                        console.error('❌ INVALID: Delivery method is a number (like ZIP code):', toolCall.input.method);
+                        console.error('❌ Rejecting invalid delivery method - this prevents mystery rows');
+                        console.error('❌ Valid delivery methods are: "pickup" or "delivery"');
+                        // Don't set invalid delivery method - this prevents corrupted data
+                        break;
+                      }
+                      
+                      // Only accept "pickup" or "delivery" - normalize to lowercase
+                      if (methodValue === 'pickup' || methodValue === 'delivery') {
+                        currentOrder.deliveryMethod = methodValue;
+                        console.log('✅ Set delivery method:', methodValue);
+                        activeOrders.set(streamSid, currentOrder);
+                      } else {
+                        console.error('❌ INVALID: Delivery method is not "pickup" or "delivery":', toolCall.input.method);
+                        console.error('❌ Rejecting invalid delivery method - this prevents mystery rows');
+                        // Don't set invalid delivery method
+                        break;
+                      }
                       
                       // Verify it was saved
                       const verifyOrder = activeOrders.get(streamSid);
@@ -2591,7 +2611,8 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                         // Use immediate execution (0ms) for first attempt - don't wait
                         setTimeout(() => {
                           if (!userIsSpeaking && openaiClient && openaiClient.readyState === WebSocket.OPEN && streamSid === sid) {
-                            // Don't check responseInProgress - force response even if one is in progress
+                            // CRITICAL: NEVER check responseInProgress - ALWAYS force response immediately
+                            // This ensures the AI NEVER goes silent after delivery confirmation
                             console.log('✓ Delivery method set - ensuring IMMEDIATE AI response with confirmation (attempt ' + (deliveryRetryCount + 1) + '/' + maxDeliveryRetries + ')');
                             const deliveryResponsePayload = {
                               type: 'response.create',
@@ -2601,12 +2622,14 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                             };
                             
                             try {
+                              // CRITICAL: Force response immediately - don't check responseInProgress
+                              responseInProgress = false; // Clear flag before sending
                               if (safeSendToOpenAI(deliveryResponsePayload, 'response.create (after delivery method)')) {
                                 console.log('✓ Response creation sent IMMEDIATELY after delivery method set');
                                 // Reset flag after a short delay to allow response to start
                                 setTimeout(() => {
                                   responseInProgress = false;
-                                }, 200);
+                                }, 100);
                               } else {
                                 console.error('❌ Failed to create response after delivery method');
                                 // Retry faster if we haven't exceeded max retries
@@ -2638,7 +2661,7 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                               responseInProgress = false;
                             }
                           }
-                        }, deliveryRetryCount === 0 ? 0 : 100); // CRITICAL: First attempt is IMMEDIATE (0ms), retries are fast (100ms)
+                        }, deliveryRetryCount === 0 ? 0 : 50); // CRITICAL: First attempt is IMMEDIATE (0ms), retries are VERY fast (50ms)
                       };
                       
                       ensureDeliveryResponse();

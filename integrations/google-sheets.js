@@ -198,19 +198,36 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
     const phoneNumber = order.customerPhone || 'not provided';
     
     // CRITICAL: Format Column C - ALWAYS include address if delivery is selected
+    // CRITICAL: Validate deliveryMethod BEFORE using it - prevent mystery rows
+    // First, check if deliveryMethod is valid (not a number like "46031")
+    const deliveryMethodValue = order.deliveryMethod ? String(order.deliveryMethod).trim().toLowerCase() : null;
+    
+    // CRITICAL: Reject any numeric values (like ZIP codes "46031") - these are NOT valid delivery methods
+    if (deliveryMethodValue && /^\d+$/.test(deliveryMethodValue) && deliveryMethodValue.length > 2) {
+      console.error('❌ INVALID: Delivery method is a number (like ZIP code):', order.deliveryMethod);
+      console.error('❌ This will cause a mystery row - rejecting and using fallback');
+      // Don't use invalid delivery method - use fallback
+      order.deliveryMethod = null; // Clear invalid value
+    }
+    
     // If delivery is selected but no address, log as "delivery - address not provided"
     let deliveryDisplay;
-    if (order.deliveryMethod === 'delivery') {
+    if (deliveryMethodValue === 'delivery') {
       if (order.address && order.address.trim().length > 0) {
         deliveryDisplay = `delivery - ${order.address.trim()}`;
       } else {
         console.warn('⚠️  WARNING: Delivery selected but no address provided');
         deliveryDisplay = 'delivery - address not provided';
       }
-    } else if (order.deliveryMethod === 'pickup') {
+    } else if (deliveryMethodValue === 'pickup') {
       deliveryDisplay = 'pickup';
     } else {
-      deliveryDisplay = order.deliveryMethod || 'not specified';
+      // CRITICAL: Only use fallback if deliveryMethod is truly not set - never use invalid values
+      deliveryDisplay = 'not specified';
+      if (order.deliveryMethod) {
+        console.error('❌ INVALID: Delivery method is not "pickup" or "delivery":', order.deliveryMethod);
+        console.error('❌ Using fallback "not specified" to prevent mystery row');
+      }
     }
     
     console.log('📋 Delivery display:', deliveryDisplay, '| Method:', order.deliveryMethod, '| Address:', order.address || 'none');
