@@ -156,6 +156,9 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
   
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'google-sheets.js:159',message:'Price calculation START',data:{itemsCount:order.items?.length || 0,items:order.items?.map(i=>({name:i.name,price:i.price,quantity:i.quantity})) || [],customerPhone:order.customerPhone},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C,D'})}).catch(()=>{});
+      // #endregion
       // CRITICAL: Calculate totals - MUST include all items PLUS 8% NYS tax
       let subtotal = 0;
       if (!order.items || order.items.length === 0) {
@@ -176,6 +179,9 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
       const tax = subtotal * taxRate;
       const total = subtotal + tax; // CRITICAL: Total = Subtotal + Tax (8%)
       
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'google-sheets.js:177',message:'Price calculation RESULT',data:{subtotal:subtotal,tax:tax,taxRate:taxRate,total:total,itemsCount:order.items.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+      // #endregion
       console.log(`📊 Price calculation: Subtotal: $${subtotal.toFixed(2)} + Tax (${(taxRate * 100).toFixed(0)}%): $${tax.toFixed(2)} = Total: $${total.toFixed(2)}`);
       
       // Format items as string
@@ -196,6 +202,9 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
     // CRITICAL: Use customerPhone if available, otherwise fallback to 'not provided'
     // Do NOT use order.from as it contains callSid, not phone number
     const phoneNumber = order.customerPhone || 'not provided';
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'google-sheets.js:198',message:'Phone number extraction',data:{customerPhone:order.customerPhone,orderFrom:order.from,phoneNumber:phoneNumber},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+    // #endregion
     
     // CRITICAL: Format Column C - ALWAYS include address if delivery is selected
     // CRITICAL: Validate deliveryMethod BEFORE using it - prevent mystery rows

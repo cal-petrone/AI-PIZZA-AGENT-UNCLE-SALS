@@ -1031,6 +1031,9 @@ wss.on('connection', (ws, req) => {
             streamSid: streamSid,
             from: callSid // Keep callSid for reference, but use customerPhone for logging
           };
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:1027',message:'Order initialized with phone',data:{callerPhone:callerPhone,callSid:callSid,orderCustomerPhone:order.customerPhone},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+          // #endregion
           activeOrders.set(streamSid, order);
           
           console.log('✓ State reset complete - connecting to OpenAI for new call');
@@ -2547,6 +2550,9 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                     break;
                     
                   case 'set_delivery_method':
+                    // #region agent log
+                    fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2549',message:'set_delivery_method ENTRY',data:{method:toolCall.input?.method,orderState:{deliveryMethod:currentOrder.deliveryMethod,customerName:currentOrder.customerName,itemsCount:currentOrder.items.length,customerPhone:currentOrder.customerPhone},streamSid:streamSid,userIsSpeaking:userIsSpeaking,openaiReady:openaiClient?.readyState === WebSocket.OPEN,responseInProgress:responseInProgress},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,E'})}).catch(()=>{});
+                    // #endregion
                     console.log('🔍🔍🔍 DEBUG: set_delivery_method tool called');
                     console.log('🔍 Tool call input:', JSON.stringify(toolCall.input, null, 2));
                     console.log('🔍 Current order BEFORE setting:', {
@@ -2608,8 +2614,14 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                       const maxDeliveryRetries = 5;
                       
                       const ensureDeliveryResponse = () => {
+                        // #region agent log
+                        fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2610',message:'ensureDeliveryResponse CALLED',data:{retryCount:deliveryRetryCount,maxRetries:maxDeliveryRetries,delay:deliveryRetryCount === 0 ? 0 : 50,userIsSpeaking:userIsSpeaking,openaiReady:openaiClient?.readyState === WebSocket.OPEN,streamSidMatch:streamSid === sid,responseInProgress:responseInProgress},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,E'})}).catch(()=>{});
+                        // #endregion
                         // Use immediate execution (0ms) for first attempt - don't wait
                         setTimeout(() => {
+                          // #region agent log
+                          fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2613',message:'ensureDeliveryResponse TIMEOUT EXECUTED',data:{retryCount:deliveryRetryCount,userIsSpeaking:userIsSpeaking,openaiReady:openaiClient?.readyState === WebSocket.OPEN,streamSidMatch:streamSid === sid,responseInProgress:responseInProgress},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,E'})}).catch(()=>{});
+                          // #endregion
                           if (!userIsSpeaking && openaiClient && openaiClient.readyState === WebSocket.OPEN && streamSid === sid) {
                             // CRITICAL: NEVER check responseInProgress - ALWAYS force response immediately
                             // This ensures the AI NEVER goes silent after delivery confirmation
@@ -2624,7 +2636,14 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                             try {
                               // CRITICAL: Force response immediately - don't check responseInProgress
                               responseInProgress = false; // Clear flag before sending
-                              if (safeSendToOpenAI(deliveryResponsePayload, 'response.create (after delivery method)')) {
+                              // #region agent log
+                              fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2626',message:'BEFORE safeSendToOpenAI response.create',data:{responseInProgressBefore:responseInProgress,retryCount:deliveryRetryCount},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B,E'})}).catch(()=>{});
+                              // #endregion
+                              const sendResult = safeSendToOpenAI(deliveryResponsePayload, 'response.create (after delivery method)');
+                              // #region agent log
+                              fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2627',message:'AFTER safeSendToOpenAI response.create',data:{sendResult:sendResult,responseInProgressAfter:responseInProgress,retryCount:deliveryRetryCount},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B,E'})}).catch(()=>{});
+                              // #endregion
+                              if (sendResult) {
                                 console.log('✓ Response creation sent IMMEDIATELY after delivery method set');
                                 // Reset flag after a short delay to allow response to start
                                 setTimeout(() => {
@@ -2632,6 +2651,9 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                                 }, 100);
                               } else {
                                 console.error('❌ Failed to create response after delivery method');
+                                // #region agent log
+                                fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2634',message:'safeSendToOpenAI FAILED - will retry',data:{retryCount:deliveryRetryCount,maxRetries:maxDeliveryRetries},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B'})}).catch(()=>{});
+                                // #endregion
                                 // Retry faster if we haven't exceeded max retries
                                 if (deliveryRetryCount < maxDeliveryRetries - 1) {
                                   deliveryRetryCount++;
@@ -2642,6 +2664,9 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                               }
                             } catch (error) {
                               console.error('Error creating response after delivery method:', error);
+                              // #region agent log
+                              fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2644',message:'EXCEPTION in ensureDeliveryResponse',data:{error:error.message,retryCount:deliveryRetryCount},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B,E'})}).catch(()=>{});
+                              // #endregion
                               // Retry faster if we haven't exceeded max retries
                               if (deliveryRetryCount < maxDeliveryRetries - 1) {
                                 deliveryRetryCount++;
@@ -2651,6 +2676,9 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                               }
                             }
                           } else {
+                            // #region agent log
+                            fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2651',message:'CONDITION NOT MET - user speaking or client not ready',data:{userIsSpeaking:userIsSpeaking,openaiReady:openaiClient?.readyState === WebSocket.OPEN,streamSidMatch:streamSid === sid,retryCount:deliveryRetryCount},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+                            // #endregion
                             // User is speaking or client not ready - retry faster when they're done
                             if (deliveryRetryCount < maxDeliveryRetries - 1) {
                               deliveryRetryCount++;
@@ -3220,6 +3248,64 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                 console.error('Error type:', errorDetails.type || 'unknown');
                 console.error('Error code:', errorDetails.code || 'unknown');
                 console.error('Error message:', errorDetails.message || errorDetails || 'No message provided');
+                
+                // #region agent log
+                fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:3246',message:'OpenAI error detected',data:{errorType:errorDetails.type,errorCode:errorDetails.code,errorMessage:errorDetails.message,streamSid:streamSid},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
+                // #endregion
+                
+                // CRITICAL: Handle rate limit errors with retry logic
+                const isRateLimit = errorDetails.code === 'rate_limit_exceeded' || 
+                                   errorDetails.type === 'rate_limit_exceeded' ||
+                                   (errorDetails.message && typeof errorDetails.message === 'string' && 
+                                    (errorDetails.message.includes('rate_limit') || 
+                                     errorDetails.message.includes('Rate limit') ||
+                                     errorDetails.message.includes('TPM') ||
+                                     errorDetails.message.includes('tokens per min')));
+                
+                if (isRateLimit) {
+                  // #region agent log
+                  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:3254',message:'RATE LIMIT ERROR DETECTED',data:{errorMessage:errorDetails.message,streamSid:streamSid},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
+                  // #endregion
+                  console.error('\n🚨🚨🚨 RATE LIMIT ERROR DETECTED 🚨🚨🚨');
+                  console.error('OpenAI API rate limit exceeded - this causes delays and silence!');
+                  console.error('Error message:', errorDetails.message);
+                  
+                  // Extract wait time from error message if available (e.g., "Please try again in 3.961s")
+                  let waitTime = 5000; // Default 5 seconds
+                  const waitMatch = errorDetails.message?.match(/try again in ([\d.]+)s/i);
+                  if (waitMatch) {
+                    waitTime = Math.ceil(parseFloat(waitMatch[1]) * 1000) + 1000; // Add 1 second buffer
+                    console.error(`⏳ Will retry after ${waitTime}ms (${waitTime/1000}s)`);
+                  }
+                  
+                  // Retry the response creation after rate limit clears
+                  setTimeout(() => {
+                    if (openaiClient && openaiClient.readyState === WebSocket.OPEN && streamSid === sid && !userIsSpeaking) {
+                      // #region agent log
+                      fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:3270',message:'Retrying after rate limit',data:{waitTime:waitTime,streamSid:streamSid,responseInProgress:responseInProgress},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
+                      // #endregion
+                      console.log('✓ Retrying response creation after rate limit cleared');
+                      responseInProgress = false; // Clear flag to allow retry
+                      const retryResponsePayload = {
+                        type: 'response.create',
+                        response: {
+                          modalities: ['audio', 'text']
+                        }
+                      };
+                      
+                      if (safeSendToOpenAI(retryResponsePayload, 'response.create (rate limit retry)')) {
+                        responseInProgress = true;
+                        console.log('✓ Retry response creation sent after rate limit');
+                      } else {
+                        console.error('❌ Failed to retry response creation after rate limit');
+                        responseInProgress = false;
+                      }
+                    }
+                  }, waitTime);
+                  
+                  // Don't continue with normal error recovery for rate limits - we're retrying
+                  break;
+                }
                 
                 // Special handling for quota errors
                 if (errorDetails.code === 'insufficient_quota' || errorDetails.type === 'insufficient_quota' || 
