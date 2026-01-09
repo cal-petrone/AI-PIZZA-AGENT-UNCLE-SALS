@@ -450,6 +450,7 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
 
 /**
  * Create header row if sheet is empty
+ * CRITICAL: Headers must match the actual data structure used in logOrderToGoogleSheets (6 columns: A-F)
  */
 async function initializeSheetHeaders() {
   if (!sheetsClient || !spreadsheetId) {
@@ -457,44 +458,50 @@ async function initializeSheetHeaders() {
   }
   
   try {
-    // Check if sheet has data
+    // Check if sheet has data - use the same range as order logging (A-F)
     const response = await sheetsClient.spreadsheets.values.get({
       spreadsheetId: spreadsheetId,
-      range: 'Sheet1!A1:N1',
+      range: 'Sheet1!A1:F1', // Match the actual data structure (6 columns)
     });
     
     // If no headers exist, create them
+    // CRITICAL: Headers must match the exact structure used in logOrderToGoogleSheets
     if (!response.data.values || response.data.values.length === 0) {
       const headers = [
-        'Timestamp',
-        'Store Name',
-        'Location',
-        'Name',
-        'Phone Number',
-        'Items',
-        'Item Count',
-        'Delivery Method',
-        'Address',
-        'Payment Method',
-        'Subtotal',
-        'Tax',
-        'Total',
-        'Stream ID',
+        'Name',              // Column A
+        'Phone Number',      // Column B
+        'Pick Up/Delivery',  // Column C
+        'Pick Up Time (EST)', // Column D
+        'Price',             // Column E
+        'Order Details',     // Column F
       ];
       
       await sheetsClient.spreadsheets.values.update({
         spreadsheetId: spreadsheetId,
-        range: 'Sheet1!A1:N1',
+        range: 'Sheet1!A1:F1', // Match the actual data structure
         valueInputOption: 'USER_ENTERED',
         resource: {
           values: [headers],
         },
       });
       
-      console.log('✓ Google Sheets headers created');
+      console.log('✓ Google Sheets headers created (6 columns: A-F)');
+    } else {
+      // Headers already exist - this is fine, no need to log
+      console.log('✓ Google Sheets headers already exist');
     }
   } catch (error) {
-    console.error('✗ Error initializing sheet headers:', error.message);
+    // Make error handling more specific and non-blocking
+    // This is a non-critical operation - if it fails, orders can still be logged
+    if (error.message && error.message.includes('Internal error encountered')) {
+      // This might happen if the sheet structure is different or permissions are limited
+      // It's safe to ignore - headers might already exist or the sheet might be managed differently
+      console.warn('⚠️  Could not initialize sheet headers (sheet may already have headers or different structure)');
+      console.warn('⚠️  This is non-critical - orders will still be logged');
+    } else {
+      console.error('✗ Error initializing sheet headers:', error.message);
+      console.error('✗ This is non-critical - orders will still be logged');
+    }
   }
 }
 
