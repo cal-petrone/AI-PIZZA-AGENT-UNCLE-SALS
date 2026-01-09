@@ -2017,11 +2017,31 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                           itemName = menuItem;
                           foundInMenu = true;
                           const menuItemData = menu[menuItem];
+                          
+                          // Try to get price from priceMap first (for items with sizes)
                           if (size && menuItemData && menuItemData.priceMap && menuItemData.priceMap[size]) {
                             itemPrice = menuItemData.priceMap[size];
-                          } else if (menuItemData && menuItemData.price) {
+                            console.log(`✅ Found price for ${itemName} (${size}): $${itemPrice}`);
+                          } 
+                          // Fallback to direct price property
+                          else if (menuItemData && menuItemData.price) {
                             itemPrice = menuItemData.price;
+                            console.log(`✅ Found price for ${itemName}: $${itemPrice}`);
                           }
+                          // Try default size if no size specified
+                          else if (menuItemData && menuItemData.priceMap) {
+                            const defaultSize = menuItemData.sizes && menuItemData.sizes.length > 0 ? menuItemData.sizes[0] : 'regular';
+                            if (menuItemData.priceMap[defaultSize]) {
+                              itemPrice = menuItemData.priceMap[defaultSize];
+                              console.log(`✅ Found price for ${itemName} (default size ${defaultSize}): $${itemPrice}`);
+                            }
+                          }
+                          
+                          if (itemPrice === 0) {
+                            console.error(`❌ WARNING: Item "${itemName}" found in menu but price is 0!`);
+                            console.error(`❌ Menu item data:`, JSON.stringify(menuItemData, null, 2));
+                          }
+                          
                           break;
                         }
                       }
@@ -2039,6 +2059,16 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
                         console.warn('⚠️  Could not list menu items');
                       }
                       break; // Don't add items that aren't in the menu
+                    }
+                    
+                    // CRITICAL: Don't add items with 0 price - this causes $0.00 orders
+                    if (itemPrice === 0) {
+                      console.error(`❌❌❌ CANNOT ADD ITEM - PRICE IS 0 ❌❌❌`);
+                      console.error(`❌ Item: ${itemName}, Size: ${size || 'regular'}`);
+                      console.error(`❌ This will cause the order to have $0.00 total`);
+                      console.error(`❌ Menu structure may be incorrect or item not properly configured`);
+                      // Don't add item - it will cause price calculation issues
+                      break;
                     }
                     
                     // Check if item already exists to prevent duplicates
