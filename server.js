@@ -3323,14 +3323,32 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
             console.log('Response status:', data.response?.status);
             console.log('Response output:', data.response?.output);
             
-            // CRITICAL: DO NOT force follow-up responses - this causes interruptions
-            // The AI will respond naturally via turn_detection when the user finishes speaking
-            // If the response was just a tool call, the AI will still respond naturally after the user speaks
+            // CRITICAL: Check if response failed BEFORE resetting responseInProgress
+            // This allows us to retry if it was a critical confirmation
+            const responseFailed = data.response?.status === 'failed';
             const outputItems = data.response?.output || [];
             const hasToolCall = outputItems.some(item => item.type === 'function_call');
             const hasMessage = outputItems.some(item => item.type === 'message');
             
-            if (hasToolCall && !hasMessage) {
+            // CRITICAL: If response failed and it was a delivery/name/address confirmation, we MUST retry
+            if (responseFailed) {
+              const currentOrder = activeOrders.get(streamSid);
+              const isDeliveryConfirmation = currentOrder?.deliveryMethod && !currentOrder?.address && currentOrder?.deliveryMethod === 'delivery';
+              const isNameConfirmation = !currentOrder?.customerName;
+              const isAddressConfirmation = currentOrder?.deliveryMethod === 'delivery' && !currentOrder?.address;
+              
+              if (isDeliveryConfirmation || isNameConfirmation || isAddressConfirmation) {
+                console.error('🚨🚨🚨 CRITICAL: Response failed during confirmation - MUST retry to prevent silence!');
+                console.error('🚨 Context:', { isDeliveryConfirmation, isNameConfirmation, isAddressConfirmation, responseStatus: data.response?.status });
+                // Don't reset responseInProgress yet - let the failed handler retry
+                // The response.done handler with status === 'failed' will handle the retry
+              }
+            }
+            
+            // CRITICAL: DO NOT force follow-up responses - this causes interruptions
+            // The AI will respond naturally via turn_detection when the user finishes speaking
+            // If the response was just a tool call, the AI will still respond naturally after the user speaks
+            if (hasToolCall && !hasMessage && !responseFailed) {
               console.log('✅ Tool call completed - ensuring AI responds with confirmation');
               // CRITICAL: After a tool call, ensure AI responds with a confirmation
               // Wait a moment to ensure user has finished speaking, then trigger response
@@ -3363,9 +3381,14 @@ NEVER repeat the same response twice. NEVER say the exact same thing you just sa
               }, 100); // Optimized: Reduced delay to 100ms for faster response
             }
             
-            // CRITICAL: Always reset responseInProgress, even if response failed or was cancelled
-            responseInProgress = false; // Mark that response is complete, ready for next one
-            console.log('✓ responseInProgress reset to false');
+            // CRITICAL: Only reset responseInProgress if response didn't fail, or if it failed but wasn't a critical confirmation
+            // If it was a critical confirmation failure, the failed handler will manage responseInProgress
+            if (!responseFailed || (!isDeliveryConfirmation && !isNameConfirmation && !isAddressConfirmation)) {
+              responseInProgress = false; // Mark that response is complete, ready for next one
+              console.log('✓ responseInProgress reset to false');
+            } else {
+              console.log('⚠️  Keeping responseInProgress true - failed handler will manage retry');
+            }
             
             if (data.response?.status === 'failed') {
               console.error('\n✗✗✗ RESPONSE FAILED ✗✗✗');
