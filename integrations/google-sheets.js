@@ -24,33 +24,57 @@ let spreadsheetId = null;
  */
 async function initializeGoogleSheets() {
   const credentialsPath = process.env.GOOGLE_SHEETS_CREDENTIALS_PATH;
+  const credentialsBase64 = process.env.GOOGLE_SHEETS_CREDENTIALS_BASE64;
   const sheetId = process.env.GOOGLE_SHEETS_ID;
   
-  if (!credentialsPath || !sheetId) {
+  if ((!credentialsPath && !credentialsBase64) || !sheetId) {
     console.log('⚠ Google Sheets not configured - skipping initialization');
     return false;
   }
   
   try {
-    // Resolve path to absolute - handle both relative and absolute paths
-    const credentialsAbsolutePath = path.isAbsolute(credentialsPath)
-      ? credentialsPath
-      : path.resolve(__dirname, '..', credentialsPath.replace(/^\.\//, ''));
-    
-    console.log('📁 Loading Google Sheets credentials from:', credentialsAbsolutePath);
-    
-    // Check if file exists
+    let auth;
     const fs = require('fs');
-    if (!fs.existsSync(credentialsAbsolutePath)) {
-      console.error('✗ Credentials file not found:', credentialsAbsolutePath);
+    
+    // Option 1: Use base64 encoded credentials (for Railway/cloud deployments)
+    if (credentialsBase64) {
+      console.log('📁 Loading Google Sheets credentials from base64 environment variable');
+      try {
+        const credentialsJson = Buffer.from(credentialsBase64, 'base64').toString('utf-8');
+        const credentials = JSON.parse(credentialsJson);
+        auth = new google.auth.GoogleAuth({
+          credentials: credentials,
+          scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+        });
+      } catch (error) {
+        console.error('✗ Failed to parse base64 credentials:', error.message);
+        return false;
+      }
+    } 
+    // Option 2: Use file path (for local development)
+    else if (credentialsPath) {
+      // Resolve path to absolute - handle both relative and absolute paths
+      const credentialsAbsolutePath = path.isAbsolute(credentialsPath)
+        ? credentialsPath
+        : path.resolve(__dirname, '..', credentialsPath.replace(/^\.\//, ''));
+      
+      console.log('📁 Loading Google Sheets credentials from:', credentialsAbsolutePath);
+      
+      // Check if file exists
+      if (!fs.existsSync(credentialsAbsolutePath)) {
+        console.error('✗ Credentials file not found:', credentialsAbsolutePath);
+        return false;
+      }
+      
+      // Load credentials from file
+      auth = new google.auth.GoogleAuth({
+        keyFile: credentialsAbsolutePath,
+        scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+      });
+    } else {
+      console.error('✗ No credentials provided (neither path nor base64)');
       return false;
     }
-    
-    // Load credentials from file
-    const auth = new google.auth.GoogleAuth({
-      keyFile: credentialsAbsolutePath,
-      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-    });
     
     sheetsClient = google.sheets({ version: 'v4', auth });
     spreadsheetId = sheetId;
