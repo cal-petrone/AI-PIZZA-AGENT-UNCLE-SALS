@@ -1,0 +1,40 @@
+{
+  "name": "uncle-sals-pizza-ai-assistant",
+  "version": "1.0.0",
+  "description": "Real-time AI pizza ordering assistant using Twilio Media Streams and OpenAI Realtime API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "start:permanent": "pm2 start ecosystem.config.js",
+    "start:new": "node server-new.js",
+    "dev": "nodemon server.js",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js || node tests/order-manager.test.js",
+    "pm2:start": "npx pm2 start ecosystem.config.js",
+    "pm2:stop": "npx pm2 stop all",
+    "pm2:restart": "npx pm2 restart all",
+    "pm2:logs": "npx pm2 logs",
+    "pm2:status": "npx pm2 status",
+    "pm2:save": "npx pm2 save"
+  },
+  "keywords": [
+    "twilio",
+    "openai",
+    "voice",
+    "ai",
+    "pizza"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "express": "^4.18.2",
+    "googleapis": "^169.0.0",
+    "squareup": "^1.0.0",
+    "twilio": "^4.19.0",
+    "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2",
+    "pm2": "^6.0.14"
+  }
+}

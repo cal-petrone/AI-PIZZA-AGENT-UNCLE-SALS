@@ -1,0 +1,31 @@
+# Environment variables
+.env
+
+# Google Sheets credentials
+google-credentials.json
+*-credentials.json
+credentials.json
+
+# Node modules
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+*.temp
+
+
+
