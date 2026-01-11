@@ -27,6 +27,23 @@ Thumbs.db
 *.tmp
 *.temp
 
+# Google Sheets base64 credentials (sensitive)
+google-credentials-base64*.txt
+*.base64
+
+# Ngrok (may contain tokens)
+ngrok
+.ngrok
+
+# PM2 logs and data
+logs/
+.pm2/
+pm2-error.log
+pm2-out.log
+
+# Railway specific (if any)
+.railway/
+
 
 
 
