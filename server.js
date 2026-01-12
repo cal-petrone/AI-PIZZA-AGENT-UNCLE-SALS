@@ -805,13 +805,20 @@ app.get('/:clientSlug', (req, res, next) => {
   
   // Serve dashboard HTML
   const path = require('path');
-  const dashboardPath = path.join(__dirname, 'apps/dashboard/public/index.html');
   const fs = require('fs');
+  const dashboardPath = path.join(__dirname, 'apps/dashboard/public/index.html');
   
+  // Check if file exists
   if (fs.existsSync(dashboardPath)) {
-    res.sendFile(dashboardPath);
+    try {
+      res.sendFile(dashboardPath);
+    } catch (error) {
+      console.error('Error serving dashboard:', error);
+      res.status(500).send('Error loading dashboard');
+    }
   } else {
-    res.status(404).send('Dashboard not found');
+    console.error('Dashboard file not found at:', dashboardPath);
+    res.status(404).send('Dashboard not found. File path: ' + dashboardPath);
   }
 });
 
