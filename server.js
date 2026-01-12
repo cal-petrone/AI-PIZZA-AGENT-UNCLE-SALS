@@ -123,6 +123,19 @@ app.get('/', (req, res) => {
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
+// ============================================================================
+// PHASE 1: ANALYTICS API Routes (Isolated, doesn't affect existing routes)
+// ============================================================================
+if (process.env.ENABLE_ANALYTICS !== 'false') {
+  try {
+    const callsRouter = require('./apps/api/calls');
+    app.use('/api/calls', callsRouter);
+    console.log('✓ Analytics API enabled');
+  } catch (error) {
+    console.warn('⚠️  Analytics API not available (optional feature):', error.message);
+  }
+}
+
 // Debug: Check if environment variables are loaded
 console.log('Environment check:');
 console.log('- OPENAI_API_KEY:', process.env.OPENAI_API_KEY ? '✓ Found' : '✗ Missing');
@@ -710,6 +723,95 @@ app.use((err, req, res, next) => {
   } else {
     // For other routes, return JSON error
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ============================================================================
+// PHASE 1: ANALYTICS - Call Logging (Non-blocking, isolated)
+// ============================================================================
+// This section adds call analytics WITHOUT affecting existing call flow
+// All logging is non-blocking and won't interrupt calls
+
+// Twilio Status Callback - Logs call when it ends
+// Configure this URL in Twilio: https://your-domain.com/api/calls/twilio-status
+app.post('/api/calls/twilio-status', express.urlencoded({ extended: true }), async (req, res) => {
+  // CRITICAL: Respond immediately to Twilio (non-blocking)
+  res.status(200).send('OK');
+  
+  // Process logging asynchronously (doesn't block Twilio)
+  setImmediate(async () => {
+    try {
+      // Only log completed calls
+      if (req.body.CallStatus !== 'completed') {
+        return;
+      }
+      
+      const callSid = req.body.CallSid;
+      const duration = parseInt(req.body.CallDuration || 0);
+      const answered = req.body.AnsweredBy !== 'machine';
+      
+      // Extract client slug from phone number or use default
+      // You can map phone numbers to client slugs here
+      const clientSlug = process.env.DEFAULT_CLIENT_SLUG || 'unclesals';
+      
+      // Get current date (YYYY-MM-DD format)
+      const callDate = new Date().toISOString().split('T')[0];
+      
+      // Log to database (non-blocking)
+      if (process.env.ENABLE_ANALYTICS !== 'false') {
+        try {
+          const { logCall } = require('./apps/api/db');
+          logCall.run(
+            callSid,
+            clientSlug,
+            callDate,
+            duration,
+            Math.round((duration / 60) * 100) / 100, // minutes_used
+            answered ? 1 : 0,
+            1 // ai_handled (default true)
+          );
+          
+          console.log(`✓ Call logged: ${callSid}, ${duration}s, ${clientSlug}`);
+        } catch (dbError) {
+          // Log error but don't throw - analytics should never break calls
+          console.error('⚠️  Error logging call (non-critical):', dbError.message);
+        }
+      }
+    } catch (error) {
+      // Log error but don't throw - analytics should never break calls
+      console.error('⚠️  Error in status callback (non-critical):', error.message);
+    }
+  });
+});
+
+// ============================================================================
+// PHASE 1: ANALYTICS Dashboard (Isolated route)
+// ============================================================================
+// This route serves the client dashboard at /:clientSlug (e.g., /unclesals)
+// It only matches if the path is a valid client slug (alphanumeric + hyphens)
+app.get('/:clientSlug', (req, res, next) => {
+  const clientSlug = req.params.clientSlug;
+  
+  // Skip if it's an API route, known route, or has file extension
+  if (clientSlug.startsWith('api') || 
+      clientSlug === 'health' || 
+      clientSlug === 'media-stream' ||
+      clientSlug === 'incoming-call' ||
+      clientSlug.includes('.') ||
+      !/^[a-z0-9-]+$/.test(clientSlug) ||
+      clientSlug.length > 50) {
+    return next(); // Let other routes handle it
+  }
+  
+  // Serve dashboard HTML
+  const path = require('path');
+  const dashboardPath = path.join(__dirname, 'apps/dashboard/public/index.html');
+  const fs = require('fs');
+  
+  if (fs.existsSync(dashboardPath)) {
+    res.sendFile(dashboardPath);
+  } else {
+    res.status(404).send('Dashboard not found');
   }
 });
 
