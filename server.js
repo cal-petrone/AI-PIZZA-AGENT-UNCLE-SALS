@@ -789,6 +789,7 @@ app.post('/api/calls/twilio-status', express.urlencoded({ extended: true }), asy
 // ============================================================================
 // This route serves the client dashboard at /:clientSlug (e.g., /unclesals)
 // It only matches if the path is a valid client slug (alphanumeric + hyphens)
+// IMPORTANT: This route must be BEFORE the catch-all route
 app.get('/:clientSlug', (req, res, next) => {
   const clientSlug = req.params.clientSlug;
   
@@ -808,16 +809,21 @@ app.get('/:clientSlug', (req, res, next) => {
   const fs = require('fs');
   const dashboardPath = path.join(__dirname, 'apps/dashboard/public/index.html');
   
+  console.log('📊 Dashboard route matched for:', clientSlug);
+  console.log('📊 Dashboard file path:', dashboardPath);
+  console.log('📊 File exists:', fs.existsSync(dashboardPath));
+  
   // Check if file exists
   if (fs.existsSync(dashboardPath)) {
     try {
       res.sendFile(dashboardPath);
+      console.log('✓ Dashboard served successfully');
     } catch (error) {
       console.error('Error serving dashboard:', error);
       res.status(500).send('Error loading dashboard');
     }
   } else {
-    console.error('Dashboard file not found at:', dashboardPath);
+    console.error('❌ Dashboard file not found at:', dashboardPath);
     res.status(404).send('Dashboard not found. File path: ' + dashboardPath);
   }
 });
