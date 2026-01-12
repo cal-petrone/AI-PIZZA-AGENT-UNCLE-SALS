@@ -124,6 +124,35 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
 // ============================================================================
+// CORS - Allow requests from altiorai.com frontend
+// ============================================================================
+app.use((req, res, next) => {
+  const allowedOrigins = [
+    'https://altiorai.com',
+    'https://www.altiorai.com',
+    'http://localhost:5173', // For local development (Vite default)
+    'http://localhost:3000', // For local development
+    'http://127.0.0.1:5173'  // For local development (alternative)
+  ];
+  
+  const origin = req.headers.origin;
+  if (origin && allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+  }
+  
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
+  // Handle preflight OPTIONS requests
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  
+  next();
+});
+
+// ============================================================================
 // PHASE 1: ANALYTICS API Routes (Isolated, doesn't affect existing routes)
 // ============================================================================
 if (process.env.ENABLE_ANALYTICS !== 'false') {
