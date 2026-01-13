@@ -311,12 +311,21 @@ function createConversationSummary(order) {
   if (order.address) parts.push(`Addr: ${order.address}`);
   
   // Determine what to ask next (helps AI focus)
+  // CRITICAL: Make this very explicit so AI doesn't skip steps
   let nextStep = '';
-  if (order.items?.length === 0) nextStep = 'Need: items';
-  else if (!order.deliveryMethod) nextStep = 'Need: pickup/delivery';
-  else if (order.deliveryMethod === 'delivery' && !order.address) nextStep = 'Need: address';
-  else if (!order.customerName) nextStep = 'Need: name';
-  else nextStep = 'Ready: give exact total';
+  if (order.items?.length === 0) {
+    nextStep = 'CRITICAL: Need items - ask what they want';
+  } else if (!order.deliveryMethod) {
+    nextStep = 'CRITICAL: Need pickup/delivery - ask NOW before goodbye';
+  } else if (order.deliveryMethod === 'delivery' && !order.address) {
+    nextStep = 'CRITICAL: Need address - ask NOW';
+  } else if (!order.customerName) {
+    nextStep = 'CRITICAL: Need name - ask NOW';
+  } else if (!order.confirmed) {
+    nextStep = 'Ready: give exact total, then call confirm_order';
+  } else {
+    nextStep = 'Order complete - can say goodbye';
+  }
   
   parts.push(nextStep);
   
@@ -324,7 +333,7 @@ function createConversationSummary(order) {
 }
 
 /**
- * Get minimal core rules prompt (~180 tokens) - ultra-compact
+ * Get minimal core rules prompt (~200 tokens) - ultra-compact
  */
 function getCoreRulesPrompt() {
   return `Pizza assistant for Uncle Sal's. Max 1-2 short sentences per response.
@@ -336,11 +345,12 @@ RULES:
 4. Done phrases ("that's it","all set"): ask "Pickup or delivery?"
 5. Collect name, address (if delivery).
 6. PRICING: Use the EXACT total shown in ORDER summary (format: "Total: $X.XX"). NEVER estimate or say "about". Say the exact amount.
-7. On confirm: call confirm_order, say "Awesome, thanks for ordering with Uncle Sal's today!"
-8. GOODBYE phrases ("bye","goodbye","thanks bye","have a good one"): say "Thanks for calling! Have a great day!" and END the call.
+7. ORDER COMPLETION CHECK: Before saying goodbye, check ORDER summary. If it says "CRITICAL: Need" anything, ask for that FIRST. Do NOT say goodbye until order is complete.
+8. On confirm: call confirm_order, say "Awesome, thanks for ordering with Uncle Sal's today!"
+9. GOODBYE: Only say "Thanks for calling! Have a great day!" AFTER confirm_order is called. If customer says "bye" but order shows "CRITICAL: Need", ask for missing info instead of goodbye.
 
 CONFIRM PHRASES: "Got it.", "Perfect.", "Sure thing."
-NEVER go silent. Always confirm immediately. If customer says bye, end the call politely.`;
+NEVER go silent. Always confirm immediately. Complete the order before saying goodbye.`;
 }
 
 /**
