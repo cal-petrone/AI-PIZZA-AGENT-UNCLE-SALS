@@ -226,9 +226,9 @@ const tokenUsageTracker = {
 // TOKEN BUDGET CONSTANTS
 const TOKEN_BUDGET = {
   MAX_PROMPT_TOKENS: 1000,      // Max tokens for prompt (system + context + history)
-  MAX_OUTPUT_TOKENS: 150,        // Max tokens for response (enforced by API)
+  MAX_OUTPUT_TOKENS: 256,        // Max tokens for response - 256 prevents "incomplete" cutoffs while staying efficient
   MAX_HISTORY_TURNS: 2,          // Keep only last 2 user+assistant turns
-  MIN_DEBOUNCE_MS: 1500,         // Minimum 1.5s between model calls
+  MIN_DEBOUNCE_MS: 800,          // Minimum 800ms between model calls (reduced from 1500ms for faster responses)
   TOKENS_PER_CHAR: 0.25          // Rough estimate: 4 chars per token
 };
 
@@ -302,10 +302,11 @@ RULES:
 3. Wings: ask flavor first.
 4. Done phrases ("that's it","all set"): ask "Pickup or delivery?"
 5. Collect name, address (if delivery). Give total (8% tax included).
-6. On confirm: call confirm_order, say "Thanks for ordering!"
+6. On confirm: call confirm_order, say "Awesome, thanks for ordering with Uncle Sal's today!"
+7. GOODBYE phrases ("bye","goodbye","thanks bye","have a good one"): say "Thanks for calling! Have a great day!" and END the call.
 
 CONFIRM PHRASES: "Got it.", "Perfect.", "Sure thing."
-NEVER go silent. Always confirm immediately.`;
+NEVER go silent. Always confirm immediately. If customer says bye, end the call politely.`;
 }
 
 /**
@@ -3830,6 +3831,16 @@ wss.on('connection', (ws, req) => {
               console.error('\n⚠️  ERROR HANDLED - Call continues, attempting recovery\n');
             } else if (data.response?.status === 'completed') {
               console.log('✓ Response completed successfully');
+            } else if (data.response?.status === 'incomplete') {
+              // #region agent log
+              const incompleteReason = data.response?.status_details?.reason || 'unknown';
+              console.warn(`⚠️  Response INCOMPLETE - reason: ${incompleteReason}`);
+              fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:response.done',message:'Response incomplete',data:{reason:incompleteReason,maxOutputTokens:TOKEN_BUDGET.MAX_OUTPUT_TOKENS,streamSid:streamSid},timestamp:Date.now(),sessionId:'debug-session',runId:'incomplete-fix',hypothesisId:'MAX_TOKENS'})}).catch(()=>{});
+              // #endregion
+              if (incompleteReason === 'max_output_tokens') {
+                console.error('🚨 Response cut off due to max_output_tokens limit! Current limit:', TOKEN_BUDGET.MAX_OUTPUT_TOKENS);
+              }
+              console.log('Full response object:', JSON.stringify(data.response, null, 2));
             } else {
               console.log('⚠ Unknown response status:', data.response?.status);
               console.log('Full response object:', JSON.stringify(data.response, null, 2));
