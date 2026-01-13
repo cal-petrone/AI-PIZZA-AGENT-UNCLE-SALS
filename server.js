@@ -764,6 +764,14 @@ app.use((err, req, res, next) => {
 // Twilio Status Callback - Logs call when it ends
 // Configure this URL in Twilio: https://your-domain.com/api/calls/twilio-status
 app.post('/api/calls/twilio-status', express.urlencoded({ extended: true }), async (req, res) => {
+  // DEBUG: Log incoming callback to verify endpoint is hit
+  console.log('📞 Twilio status callback received:', {
+    CallSid: req.body.CallSid,
+    CallStatus: req.body.CallStatus,
+    CallDuration: req.body.CallDuration,
+    AnsweredBy: req.body.AnsweredBy
+  });
+  
   // CRITICAL: Respond immediately to Twilio (non-blocking)
   res.status(200).send('OK');
   
@@ -772,6 +780,7 @@ app.post('/api/calls/twilio-status', express.urlencoded({ extended: true }), asy
     try {
       // Only log completed calls
       if (req.body.CallStatus !== 'completed') {
+        console.log(`📞 Status callback received but status is '${req.body.CallStatus}' (not 'completed'), skipping log`);
         return;
       }
       
