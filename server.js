@@ -175,68 +175,253 @@ console.log('- NGROK_URL:', process.env.NGROK_URL || 'Not set (will use request 
 const activeOrders = new Map(); // streamSid -> order object
 
 // ============================================================================
-// TOKEN OPTIMIZATION: Conversation Memory & Compact Prompts
+// TOKEN OPTIMIZATION v2: Aggressive Token Management System
 // ============================================================================
 
 // Store conversation summaries per call (reduces token usage by 6-7x)
-const conversationSummaries = new Map(); // streamSid -> { summary: string, lastUserTurns: string[] }
+const conversationSummaries = new Map(); // streamSid -> { summary: string, lastUserTurns: [], lastAssistantTurns: [] }
+
+// Store last response.create timestamp per session for debouncing
+const lastResponseTimestamps = new Map(); // streamSid -> timestamp
+
+// Store retrieved menu snippets per session (avoid re-sending)
+const sessionMenuCache = new Map(); // streamSid -> { categories: Set, cachedMenu: string }
+
+// Token usage tracking (rolling 60-second window)
+const tokenUsageTracker = {
+  entries: [], // { timestamp, promptTokens, completionTokens, totalTokens }
+  
+  addEntry(promptTokens, completionTokens) {
+    const now = Date.now();
+    this.entries.push({
+      timestamp: now,
+      promptTokens,
+      completionTokens,
+      totalTokens: promptTokens + completionTokens
+    });
+    // Prune entries older than 60 seconds
+    this.entries = this.entries.filter(e => now - e.timestamp < 60000);
+  },
+  
+  getTPM() {
+    const now = Date.now();
+    this.entries = this.entries.filter(e => now - e.timestamp < 60000);
+    return this.entries.reduce((sum, e) => sum + e.totalTokens, 0);
+  },
+  
+  warn() {
+    const tpm = this.getTPM();
+    if (tpm > 30000) {
+      console.warn(`⚠️  TOKEN WARNING: ${tpm} tokens in last 60s (approaching 40k limit!)`);
+      return true;
+    }
+    if (tpm > 35000) {
+      console.error(`🚨 TOKEN CRITICAL: ${tpm} tokens in last 60s - EXCEEDING LIMIT!`);
+      return true;
+    }
+    return false;
+  }
+};
+
+// TOKEN BUDGET CONSTANTS
+const TOKEN_BUDGET = {
+  MAX_PROMPT_TOKENS: 1000,      // Max tokens for prompt (system + context + history)
+  MAX_OUTPUT_TOKENS: 150,        // Max tokens for response (enforced by API)
+  MAX_HISTORY_TURNS: 2,          // Keep only last 2 user+assistant turns
+  MIN_DEBOUNCE_MS: 1500,         // Minimum 1.5s between model calls
+  TOKENS_PER_CHAR: 0.25          // Rough estimate: 4 chars per token
+};
 
 /**
- * Create compact conversation summary (<=120 tokens)
+ * Estimate token count from text (rough approximation)
+ */
+function estimateTokens(text) {
+  if (!text) return 0;
+  // OpenAI uses ~4 chars per token on average for English
+  return Math.ceil(text.length * TOKEN_BUDGET.TOKENS_PER_CHAR);
+}
+
+/**
+ * Check if we should debounce this response.create call
+ * Returns true if we should skip (too soon since last call)
+ */
+function shouldDebounceResponse(streamSid) {
+  const lastTime = lastResponseTimestamps.get(streamSid) || 0;
+  const now = Date.now();
+  const elapsed = now - lastTime;
+  
+  if (elapsed < TOKEN_BUDGET.MIN_DEBOUNCE_MS) {
+    console.log(`⏳ Debouncing response.create - only ${elapsed}ms since last call (min: ${TOKEN_BUDGET.MIN_DEBOUNCE_MS}ms)`);
+    return true;
+  }
+  
+  lastResponseTimestamps.set(streamSid, now);
+  return false;
+}
+
+/**
+ * Create compact conversation summary (<=100 tokens)
  * Only includes essential order info, not full transcript
  */
 function createConversationSummary(order) {
-  const items = order.items.length > 0 
-    ? order.items.map(i => `${i.quantity}x ${i.size || ''} ${i.name}`).join(', ')
+  if (!order) return 'No order yet.';
+  
+  const items = order.items?.length > 0 
+    ? order.items.map(i => `${i.quantity}x ${i.size || ''} ${i.name}`.trim()).join(', ')
     : 'none';
   
-  const summary = `Order: ${items}. Name: ${order.customerName || 'not set'}. Method: ${order.deliveryMethod || 'not set'}. Address: ${order.address || 'not set'}. Phone: ${order.customerPhone || 'not set'}.`;
-  return summary;
+  // Ultra-compact format to save tokens
+  const parts = [];
+  parts.push(`Items: ${items}`);
+  if (order.customerName) parts.push(`Name: ${order.customerName}`);
+  if (order.deliveryMethod) parts.push(`Method: ${order.deliveryMethod}`);
+  if (order.address) parts.push(`Addr: ${order.address}`);
+  
+  // Determine what to ask next (helps AI focus)
+  let nextStep = '';
+  if (order.items?.length === 0) nextStep = 'Need: items';
+  else if (!order.deliveryMethod) nextStep = 'Need: pickup/delivery';
+  else if (order.deliveryMethod === 'delivery' && !order.address) nextStep = 'Need: address';
+  else if (!order.customerName) nextStep = 'Need: name';
+  else nextStep = 'Ready: give total';
+  
+  parts.push(nextStep);
+  
+  return parts.join('. ');
 }
 
 /**
- * Get compact core rules prompt (~250 tokens) - replaces massive 200+ line prompt
+ * Get minimal core rules prompt (~150 tokens) - ultra-compact
  */
 function getCoreRulesPrompt() {
-  return `You're a pizza ordering assistant for Uncle Sal's Pizza. Keep responses to 1-2 sentences max.
+  return `Pizza assistant for Uncle Sal's. Max 1-2 short sentences per response.
 
-CORE RULES:
-1. Greet once: "Thanks for calling Uncle Sal's Pizza. What would you like to order?"
-2. When customer orders: Call add_item_to_order tool FIRST, then confirm with 1 sentence.
-3. Wait for customer to finish speaking completely before responding.
-4. For wings: Ask flavor first, then add to order.
-5. When done ordering: Ask "Pickup or delivery?" then collect name and address if delivery.
-6. Give total (includes 8% NYS tax), get confirmation, then call confirm_order tool.
-7. End with: "Awesome, thank you so much for ordering with Uncle Sal's today!"
+RULES:
+1. Greet: "Thanks for calling Uncle Sal's. What can I get you?"
+2. On order: call add_item_to_order, then confirm briefly.
+3. Wings: ask flavor first.
+4. Done phrases ("that's it","all set"): ask "Pickup or delivery?"
+5. Collect name, address (if delivery). Give total (8% tax included).
+6. On confirm: call confirm_order, say "Thanks for ordering!"
 
-CONFIRMATION PHRASES (vary these): "Got it.", "Sure thing.", "Perfect.", "Alright.", "Sounds good."
-
-IMPORTANT: Always confirm what you heard immediately. Never go silent after customer speaks.`;
+CONFIRM PHRASES: "Got it.", "Perfect.", "Sure thing."
+NEVER go silent. Always confirm immediately.`;
 }
 
 /**
- * Get menu items on-demand (only when needed, not in every prompt)
- * Returns compact menu list for specific category
+ * Get menu items on-demand by category or search term
+ * Returns ONLY relevant items, not full menu
  */
-function getMenuItemsOnDemand(menu, category = null) {
+function getMenuItemsOnDemand(menu, searchTerm = null) {
   if (!menu || typeof menu !== 'object') return '';
   
   const items = [];
+  const searchLower = searchTerm?.toLowerCase() || '';
+  
   for (const [name, data] of Object.entries(menu)) {
-    if (category) {
-      // Filter by category if specified
-      const itemCategory = name.includes('pizza') ? 'pizza' : 
-                          name.includes('calzone') ? 'calzone' :
-                          ['garlic bread', 'garlic knots', 'mozzarella sticks', 'french fries', 'salad'].includes(name) ? 'sides' :
-                          ['soda', 'water'].includes(name) ? 'drinks' : 'other';
-      if (itemCategory !== category) continue;
+    // If search term provided, only include matching items
+    if (searchTerm) {
+      const isMatch = name.toLowerCase().includes(searchLower) ||
+                     searchLower.includes(name.toLowerCase().split(' ')[0]) ||
+                     (searchLower.includes('pizza') && name.includes('pizza')) ||
+                     (searchLower.includes('wing') && name.includes('wing')) ||
+                     (searchLower.includes('calzone') && name.includes('calzone')) ||
+                     (searchLower.includes('drink') && ['soda', 'water'].includes(name)) ||
+                     (searchLower.includes('side') && ['garlic', 'fries', 'salad', 'mozzarella'].some(s => name.includes(s)));
+      
+      if (!isMatch) continue;
     }
     
-    const sizes = data.sizes ? data.sizes.join(', ') : 'regular';
-    items.push(`- ${name} (${sizes})`);
+    const sizes = data.sizes ? data.sizes.join('/') : '';
+    items.push(`${name}${sizes ? ` (${sizes})` : ''}`);
   }
   
-  return items.length > 0 ? items.join('\n') : '';
+  return items.length > 0 ? items.join(', ') : '';
+}
+
+/**
+ * Get cached menu snippet for session, or retrieve new one
+ */
+function getSessionMenuSnippet(streamSid, menu, userText) {
+  let cache = sessionMenuCache.get(streamSid);
+  if (!cache) {
+    cache = { categories: new Set(), cachedMenu: '' };
+    sessionMenuCache.set(streamSid, cache);
+  }
+  
+  // Detect what category the user might be asking about
+  const textLower = (userText || '').toLowerCase();
+  let category = null;
+  
+  if (textLower.includes('pizza') || textLower.includes('pepperoni') || textLower.includes('cheese')) {
+    category = 'pizza';
+  } else if (textLower.includes('wing')) {
+    category = 'wings';
+  } else if (textLower.includes('drink') || textLower.includes('soda') || textLower.includes('water')) {
+    category = 'drinks';
+  } else if (textLower.includes('side') || textLower.includes('fries') || textLower.includes('knot') || textLower.includes('bread')) {
+    category = 'sides';
+  }
+  
+  // If we haven't cached this category yet, add it
+  if (category && !cache.categories.has(category)) {
+    cache.categories.add(category);
+    const snippet = getMenuItemsOnDemand(menu, category);
+    if (snippet) {
+      cache.cachedMenu = cache.cachedMenu ? `${cache.cachedMenu}; ${snippet}` : snippet;
+    }
+  }
+  
+  // For first call, provide minimal menu reference
+  if (!cache.cachedMenu) {
+    cache.cachedMenu = 'Pizza, calzones, sides, drinks available';
+  }
+  
+  return cache.cachedMenu;
+}
+
+/**
+ * Build ultra-compact session instructions (aim for <800 tokens total)
+ */
+function buildCompactInstructions(order, menu, conversationContext) {
+  const coreRules = getCoreRulesPrompt();
+  const summary = createConversationSummary(order);
+  
+  // Get only relevant menu items based on conversation
+  const menuSnippet = conversationContext?.lastUserText 
+    ? getMenuItemsOnDemand(menu, conversationContext.lastUserText)
+    : 'Pizza, calzones, sides, drinks available';
+  
+  // Build compact instructions
+  const instructions = `${coreRules}
+
+MENU: ${menuSnippet || 'Ask what they want'}
+
+ORDER: ${summary}`;
+
+  // Estimate tokens and log
+  const estimatedTokens = estimateTokens(instructions);
+  console.log(`📊 Instructions: ~${estimatedTokens} tokens`);
+  
+  return instructions;
+}
+
+/**
+ * Log token usage for monitoring
+ */
+function logTokenUsage(streamSid, promptTokens, completionTokens, source) {
+  tokenUsageTracker.addEntry(promptTokens, completionTokens);
+  const tpm = tokenUsageTracker.getTPM();
+  
+  console.log(`📊 TOKENS [${source}]: prompt=${promptTokens}, completion=${completionTokens}, total=${promptTokens + completionTokens}`);
+  console.log(`📊 ROLLING TPM (60s): ${tpm} tokens/min ${tpm > 30000 ? '⚠️ WARNING' : tpm > 35000 ? '🚨 CRITICAL' : '✓'}`);
+  
+  // Send to debug log
+  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:tokenUsage',message:'Token usage',data:{streamSid,promptTokens,completionTokens,totalTokens:promptTokens+completionTokens,rollingTPM:tpm,source},timestamp:Date.now(),sessionId:'debug-session',runId:'token-tracking',hypothesisId:'TPM'})}).catch(()=>{});
+  
+  tokenUsageTracker.warn();
+  
+  return tpm;
 }
 
 // Menu configuration (hardcoded for now, add Google Sheets later)
@@ -1420,6 +1605,8 @@ wss.on('connection', (ws, req) => {
           // Clean up order tracking
           activeOrders.delete(streamSid);
           conversationSummaries.delete(streamSid); // TOKEN OPTIMIZATION: Clean up memory summaries
+          lastResponseTimestamps.delete(streamSid); // TOKEN OPTIMIZATION: Clean up debounce timestamps
+          sessionMenuCache.delete(streamSid); // TOKEN OPTIMIZATION: Clean up menu cache
           console.log('✓ Stream stopped and cleaned up - streamSid:', streamSid);
           break;
       }
@@ -1627,7 +1814,7 @@ wss.on('connection', (ws, req) => {
             silence_duration_ms: 500  // CRITICAL: Reduced to 500ms for SUPER FAST, natural responses - maintains natural flow without interruptions
           },
           temperature: 0.7,  // Slightly lower for faster, more focused responses
-          max_response_output_tokens: 128,  // OPTIMIZED: Reduced from 256 to 128 to enforce 1-2 sentence responses (saves ~50% tokens)
+          max_response_output_tokens: TOKEN_BUDGET.MAX_OUTPUT_TOKENS,  // HARD CAP: 150 tokens max per response
           tools: [
             {
               type: 'function',
@@ -1741,33 +1928,7 @@ wss.on('connection', (ws, req) => {
               }
             }
           ],
-          instructions: `${getCoreRulesPrompt()}
-
-MENU (reference only - use exact item names):
-${menuText || 'Menu loading...'}
-
-CURRENT ORDER SUMMARY:
-${createConversationSummary(currentOrder)}
-
-CRITICAL FIRST GREETING: When the call first connects, immediately say: "Thanks for calling Uncle Sal's Pizza. What would you like to order?" Keep it short.
-
-TOOL USAGE:
-- add_item_to_order: Call FIRST when customer orders, then confirm
-- set_delivery_method: Call when customer says pickup/delivery, then confirm
-- set_address: Call when customer provides address (delivery only), then repeat address back
-- set_customer_name: Call when customer provides name, then confirm name back
-- confirm_order: Call ONLY after all info collected (name, method, address if delivery, items with prices)
-
-DETECTION RULES:
-- Done ordering phrases: "that's it", "that's all", "I'm all set" → stop asking for items, move to next step
-- Wings: Always ask flavor first before adding to order
-- Natural language: "fries"=french fries, "pop"=soda, "large pepperoni"=large pepperoni pizza
-
-RESPONSE RULES:
-- Max 1-2 sentences per response
-- Always confirm what you heard immediately (never go silent)
-- Vary confirmation phrases: "Got it.", "Sure thing.", "Perfect.", "Alright.", "Sounds good."
-- Never repeat the same response twice`
+          instructions: buildCompactInstructions(currentOrder, menu, null)
         }
       };
       
@@ -2251,6 +2412,12 @@ RESPONSE RULES:
                     }
                     
                     try {
+                      // TOKEN OPTIMIZATION: Debounce response.create calls
+                      if (shouldDebounceResponse(streamSid)) {
+                        console.log('⏳ Debounced response.create after tool call');
+                        return;
+                      }
+                      
                       if (!userIsSpeaking && !responseInProgress && openaiClient && openaiClient.readyState === WebSocket.OPEN && streamSid === sid) {
                         console.log('✓ Tool call done - ensuring AI responds with confirmation');
                         responseInProgress = true;
@@ -2262,6 +2429,10 @@ RESPONSE RULES:
                             modalities: ['audio', 'text']
                           }
                         };
+                        
+                        // Estimate tokens for tracking
+                        const estimatedPrompt = estimateTokens(buildCompactInstructions(activeOrders.get(streamSid), menu, null));
+                        logTokenUsage(streamSid, estimatedPrompt, TOKEN_BUDGET.MAX_OUTPUT_TOKENS, 'tool-call-response');
                         
                         if (safeSendToOpenAI(responseCreatePayload, 'response.create after tool call')) {
                           console.log('✓ Response creation sent after tool call');
@@ -2414,13 +2585,23 @@ RESPONSE RULES:
               console.log('✓ User said:', data.transcript);
               
               // TOKEN OPTIMIZATION: Track last 2 user turns for memory summary
-              const summary = conversationSummaries.get(streamSid) || { summary: '', lastUserTurns: [] };
+              const summary = conversationSummaries.get(streamSid) || { summary: '', lastUserTurns: [], lastAssistantTurns: [] };
               summary.lastUserTurns.push(data.transcript);
-              // Keep only last 2 turns
-              if (summary.lastUserTurns.length > 2) {
+              // Keep only last 2 turns (TOKEN_BUDGET.MAX_HISTORY_TURNS)
+              while (summary.lastUserTurns.length > TOKEN_BUDGET.MAX_HISTORY_TURNS) {
                 summary.lastUserTurns.shift();
               }
+              // Store last user text for menu retrieval
+              summary.lastUserText = data.transcript;
               conversationSummaries.set(streamSid, summary);
+              
+              // Update session menu cache based on what user mentioned
+              getSessionMenuSnippet(streamSid, menu, data.transcript);
+              
+              // Log estimated token usage for this turn
+              const currentOrderForTokens = activeOrders.get(streamSid);
+              const estimatedPrompt = estimateTokens(buildCompactInstructions(currentOrderForTokens, menu, { lastUserText: data.transcript }));
+              console.log(`📊 Estimated prompt tokens for this turn: ~${estimatedPrompt}`);
               
               // Extract name and phone number from user's speech
               const transcript = data.transcript;
@@ -3362,10 +3543,27 @@ RESPONSE RULES:
             if (data.response?.status === 'completed') {
               const currentOrder = activeOrders.get(streamSid);
               if (currentOrder) {
-                const summary = createConversationSummary(currentOrder);
-                const existing = conversationSummaries.get(streamSid) || { summary: '', lastUserTurns: [] };
-                existing.summary = summary;
+                const summaryText = createConversationSummary(currentOrder);
+                const existing = conversationSummaries.get(streamSid) || { summary: '', lastUserTurns: [], lastAssistantTurns: [] };
+                existing.summary = summaryText;
+                
+                // Track assistant response text (from output items)
+                const outputItems = data.response?.output || [];
+                const messageItem = outputItems.find(item => item.type === 'message');
+                if (messageItem?.content?.[0]?.text) {
+                  existing.lastAssistantTurns.push(messageItem.content[0].text);
+                  // Keep only last 2 turns
+                  while (existing.lastAssistantTurns.length > TOKEN_BUDGET.MAX_HISTORY_TURNS) {
+                    existing.lastAssistantTurns.shift();
+                  }
+                }
+                
                 conversationSummaries.set(streamSid, existing);
+                
+                // Log token usage for completed response
+                const estimatedPrompt = estimateTokens(buildCompactInstructions(currentOrder, menu, existing));
+                const estimatedCompletion = messageItem?.content?.[0]?.text ? estimateTokens(messageItem.content[0].text) : TOKEN_BUDGET.MAX_OUTPUT_TOKENS;
+                logTokenUsage(streamSid, estimatedPrompt, estimatedCompletion, 'response-done');
               }
             }
             
