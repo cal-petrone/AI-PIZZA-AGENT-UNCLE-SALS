@@ -260,8 +260,35 @@ function shouldDebounceResponse(streamSid) {
 }
 
 /**
- * Create compact conversation summary (<=100 tokens)
+ * Calculate exact order total from items (with 8% NYS tax)
+ */
+function calculateOrderTotal(order) {
+  if (!order || !order.items || order.items.length === 0) {
+    return { subtotal: 0, tax: 0, total: 0 };
+  }
+  
+  let subtotal = 0;
+  order.items.forEach(item => {
+    const itemPrice = item.price || 0;
+    const quantity = item.quantity || 1;
+    subtotal += itemPrice * quantity;
+  });
+  
+  const taxRate = 0.08; // 8% NYS tax
+  const tax = subtotal * taxRate;
+  const total = subtotal + tax;
+  
+  return {
+    subtotal: Math.round(subtotal * 100) / 100,
+    tax: Math.round(tax * 100) / 100,
+    total: Math.round(total * 100) / 100
+  };
+}
+
+/**
+ * Create compact conversation summary (<=120 tokens)
  * Only includes essential order info, not full transcript
+ * INCLUDES EXACT TOTAL for AI to use (not estimate)
  */
 function createConversationSummary(order) {
   if (!order) return 'No order yet.';
@@ -270,9 +297,15 @@ function createConversationSummary(order) {
     ? order.items.map(i => `${i.quantity}x ${i.size || ''} ${i.name}`.trim()).join(', ')
     : 'none';
   
+  // Calculate exact total
+  const totals = calculateOrderTotal(order);
+  
   // Ultra-compact format to save tokens
   const parts = [];
   parts.push(`Items: ${items}`);
+  if (order.items?.length > 0 && totals.total > 0) {
+    parts.push(`Total: $${totals.total.toFixed(2)} (exact, includes 8% tax)`);
+  }
   if (order.customerName) parts.push(`Name: ${order.customerName}`);
   if (order.deliveryMethod) parts.push(`Method: ${order.deliveryMethod}`);
   if (order.address) parts.push(`Addr: ${order.address}`);
@@ -283,7 +316,7 @@ function createConversationSummary(order) {
   else if (!order.deliveryMethod) nextStep = 'Need: pickup/delivery';
   else if (order.deliveryMethod === 'delivery' && !order.address) nextStep = 'Need: address';
   else if (!order.customerName) nextStep = 'Need: name';
-  else nextStep = 'Ready: give total';
+  else nextStep = 'Ready: give exact total';
   
   parts.push(nextStep);
   
@@ -291,19 +324,20 @@ function createConversationSummary(order) {
 }
 
 /**
- * Get minimal core rules prompt (~150 tokens) - ultra-compact
+ * Get minimal core rules prompt (~180 tokens) - ultra-compact
  */
 function getCoreRulesPrompt() {
   return `Pizza assistant for Uncle Sal's. Max 1-2 short sentences per response.
 
 RULES:
 1. Greet: "Thanks for calling Uncle Sal's. What can I get you?"
-2. On order: call add_item_to_order, then confirm briefly.
-3. Wings: ask flavor first.
+2. CRITICAL: When customer orders ANY item, you MUST call add_item_to_order tool FIRST, then confirm.
+3. Wings: ask flavor first, then call add_item_to_order.
 4. Done phrases ("that's it","all set"): ask "Pickup or delivery?"
-5. Collect name, address (if delivery). Give total (8% tax included).
-6. On confirm: call confirm_order, say "Awesome, thanks for ordering with Uncle Sal's today!"
-7. GOODBYE phrases ("bye","goodbye","thanks bye","have a good one"): say "Thanks for calling! Have a great day!" and END the call.
+5. Collect name, address (if delivery).
+6. PRICING: Use the EXACT total shown in ORDER summary (format: "Total: $X.XX"). NEVER estimate or say "about". Say the exact amount.
+7. On confirm: call confirm_order, say "Awesome, thanks for ordering with Uncle Sal's today!"
+8. GOODBYE phrases ("bye","goodbye","thanks bye","have a good one"): say "Thanks for calling! Have a great day!" and END the call.
 
 CONFIRM PHRASES: "Got it.", "Perfect.", "Sure thing."
 NEVER go silent. Always confirm immediately. If customer says bye, end the call politely.`;
