@@ -57,10 +57,21 @@ const getDailyStats = db.prepare(`
   ORDER BY call_date ASC
 `);
 
+const getDailyCallCounts = db.prepare(`
+  SELECT 
+    call_date,
+    COUNT(*) as call_count
+  FROM calls
+  WHERE client_slug = ? AND call_date >= date('now', '-7 days')
+  GROUP BY call_date
+  ORDER BY call_date ASC
+`);
+
 module.exports = {
   db,
   logCall,
   getStats,
-  getDailyStats
+  getDailyStats,
+  getDailyCallCounts
 };
 

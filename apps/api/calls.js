@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { logCall, getStats, getDailyStats } = require('./db');
+const { logCall, getStats, getDailyStats, getDailyCallCounts } = require('./db');
 
 // POST /api/calls/log - Log call data (idempotent by Call SID)
 router.post('/log', (req, res) => {
@@ -51,18 +51,27 @@ router.get('/stats', (req, res) => {
     const weekStats = getStats.get(client, weekAgo) || { total_minutes: 0, call_count: 0 };
     const monthStats = getStats.get(client, monthAgo) || { total_minutes: 0, call_count: 0 };
     
-    // Get daily breakdown for last 7 days
+    // Get daily breakdown for last 7 days (minutes)
     const dailyData = getDailyStats.all(client);
+    
+    // Get daily call counts for last 7 days
+    const dailyCallData = getDailyCallCounts.all(client);
     
     // Format daily data (fill in missing days with 0)
     const dailyMinutes = [];
+    const dailyCalls = [];
     for (let i = 6; i >= 0; i--) {
       const date = new Date(Date.now() - i * 24 * 60 * 60 * 1000);
       const dateStr = date.toISOString().split('T')[0];
       const dayData = dailyData.find(d => d.call_date === dateStr);
+      const callData = dailyCallData.find(d => d.call_date === dateStr);
       dailyMinutes.push({
         date: dateStr,
         minutes: dayData ? (dayData.minutes || 0) : 0
+      });
+      dailyCalls.push({
+        date: dateStr,
+        calls: callData ? (callData.call_count || 0) : 0
       });
     }
     
@@ -70,7 +79,11 @@ router.get('/stats', (req, res) => {
       total_minutes_today: todayStats.total_minutes || 0,
       total_minutes_week: weekStats.total_minutes || 0,
       total_minutes_month: monthStats.total_minutes || 0,
-      daily_minutes: dailyMinutes
+      total_calls_today: todayStats.call_count || 0,
+      total_calls_week: weekStats.call_count || 0,
+      total_calls_month: monthStats.call_count || 0,
+      daily_minutes: dailyMinutes,
+      daily_calls: dailyCalls
     });
   } catch (error) {
     console.error('Error getting stats:', error);
