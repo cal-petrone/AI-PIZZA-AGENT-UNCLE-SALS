@@ -418,7 +418,6 @@ function logTokenUsage(streamSid, promptTokens, completionTokens, source) {
   console.log(`📊 ROLLING TPM (60s): ${tpm} tokens/min ${tpm > 30000 ? '⚠️ WARNING' : tpm > 35000 ? '🚨 CRITICAL' : '✓'}`);
   
   // Send to debug log
-  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:tokenUsage',message:'Token usage',data:{streamSid,promptTokens,completionTokens,totalTokens:promptTokens+completionTokens,rollingTPM:tpm,source},timestamp:Date.now(),sessionId:'debug-session',runId:'token-tracking',hypothesisId:'TPM'})}).catch(()=>{});
   
   tokenUsageTracker.warn();
   
@@ -935,9 +934,6 @@ app.post('/incoming-call', (req, res) => {
     // CRITICAL: Non-critical operations (logging, etc.) AFTER response is sent
     // This prevents any delays from affecting the response
     setTimeout(() => {
-      // #region agent log (non-blocking - runs after response is sent)
-      fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:250',message:'Sending TwiML response',data:{callerPhone:callerPhone,callSid:callSid,wsUrl:wsUrl},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
-      // #endregion
     }, 0); // Run after response is sent - fully non-blocking
   } catch (error) {
     // CRITICAL: Catch ANY error, even those outside the main try block
@@ -1320,9 +1316,6 @@ server.on('upgrade', (request, socket, head) => {
 
   // Handle WebSocket connections from Twilio
 wss.on('connection', (ws, req) => {
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:372',message:'WebSocket connection received',data:{url:req.url,headers:Object.keys(req.headers)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-  // #endregion
   // CRITICAL: Wrap entire connection handler in try-catch to prevent crashes
   try {
     let streamSid = null;
@@ -1432,9 +1425,6 @@ wss.on('connection', (ws, req) => {
             streamSid: streamSid,
             from: callSid // Keep callSid for reference, but use customerPhone for logging
           };
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:1027',message:'Order initialized with phone',data:{callerPhone:callerPhone,callSid:callSid,orderCustomerPhone:order.customerPhone},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-          // #endregion
           activeOrders.set(streamSid, order);
           
           console.log('✓ State reset complete - connecting to OpenAI for new call');
@@ -2836,9 +2826,6 @@ wss.on('connection', (ws, req) => {
                     break;
                     
                   case 'set_delivery_method':
-                    // #region agent log
-                    fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2549',message:'set_delivery_method ENTRY',data:{method:toolCall.input?.method,orderState:{deliveryMethod:currentOrder.deliveryMethod,customerName:currentOrder.customerName,itemsCount:currentOrder.items.length,customerPhone:currentOrder.customerPhone},streamSid:streamSid,userIsSpeaking:userIsSpeaking,openaiReady:openaiClient?.readyState === WebSocket.OPEN,responseInProgress:responseInProgress},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,E'})}).catch(()=>{});
-                    // #endregion
                     console.log('🔍🔍🔍 DEBUG: set_delivery_method tool called');
                     console.log('🔍 Tool call input:', JSON.stringify(toolCall.input, null, 2));
                     console.log('🔍 Current order BEFORE setting:', {
@@ -2900,14 +2887,8 @@ wss.on('connection', (ws, req) => {
                       const maxDeliveryRetries = 5;
                       
                       const ensureDeliveryResponse = () => {
-                        // #region agent log
-                        fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2610',message:'ensureDeliveryResponse CALLED',data:{retryCount:deliveryRetryCount,maxRetries:maxDeliveryRetries,delay:deliveryRetryCount === 0 ? 0 : 50,userIsSpeaking:userIsSpeaking,openaiReady:openaiClient?.readyState === WebSocket.OPEN,streamSidMatch:streamSid === sid,responseInProgress:responseInProgress},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,E'})}).catch(()=>{});
-                        // #endregion
                         // Use immediate execution (0ms) for first attempt - don't wait
                         setTimeout(() => {
-                          // #region agent log
-                          fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2613',message:'ensureDeliveryResponse TIMEOUT EXECUTED',data:{retryCount:deliveryRetryCount,userIsSpeaking:userIsSpeaking,openaiReady:openaiClient?.readyState === WebSocket.OPEN,streamSidMatch:streamSid === sid,responseInProgress:responseInProgress},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,E'})}).catch(()=>{});
-                          // #endregion
                           if (!userIsSpeaking && openaiClient && openaiClient.readyState === WebSocket.OPEN && streamSid === sid) {
                             // CRITICAL: NEVER check responseInProgress - ALWAYS force response immediately
                             // This ensures the AI NEVER goes silent after delivery confirmation
@@ -2922,13 +2903,7 @@ wss.on('connection', (ws, req) => {
                             try {
                               // CRITICAL: Force response immediately - don't check responseInProgress
                               responseInProgress = false; // Clear flag before sending
-                              // #region agent log
-                              fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2626',message:'BEFORE safeSendToOpenAI response.create',data:{responseInProgressBefore:responseInProgress,retryCount:deliveryRetryCount},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B,E'})}).catch(()=>{});
-                              // #endregion
                               const sendResult = safeSendToOpenAI(deliveryResponsePayload, 'response.create (after delivery method)');
-                              // #region agent log
-                              fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2627',message:'AFTER safeSendToOpenAI response.create',data:{sendResult:sendResult,responseInProgressAfter:responseInProgress,retryCount:deliveryRetryCount},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B,E'})}).catch(()=>{});
-                              // #endregion
                               if (sendResult) {
                                 console.log('✓ Response creation sent IMMEDIATELY after delivery method set');
                                 // CRITICAL: Don't reset responseInProgress immediately - wait for response to actually start
@@ -2953,9 +2928,6 @@ wss.on('connection', (ws, req) => {
                                 }, 500);
                               } else {
                                 console.error('❌ Failed to create response after delivery method');
-                                // #region agent log
-                                fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2722',message:'safeSendToOpenAI FAILED - will retry',data:{retryCount:deliveryRetryCount,maxRetries:maxDeliveryRetries},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B'})}).catch(()=>{});
-                                // #endregion
                                 // Retry faster if we haven't exceeded max retries
                                 if (deliveryRetryCount < maxDeliveryRetries - 1) {
                                   deliveryRetryCount++;
@@ -2967,9 +2939,6 @@ wss.on('connection', (ws, req) => {
                               }
                             } catch (error) {
                               console.error('Error creating response after delivery method:', error);
-                              // #region agent log
-                              fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2644',message:'EXCEPTION in ensureDeliveryResponse',data:{error:error.message,retryCount:deliveryRetryCount},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B,E'})}).catch(()=>{});
-                              // #endregion
                               // Retry faster if we haven't exceeded max retries
                               if (deliveryRetryCount < maxDeliveryRetries - 1) {
                                 deliveryRetryCount++;
@@ -2979,9 +2948,6 @@ wss.on('connection', (ws, req) => {
                               }
                             }
                           } else {
-                            // #region agent log
-                            fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2651',message:'CONDITION NOT MET - user speaking or client not ready',data:{userIsSpeaking:userIsSpeaking,openaiReady:openaiClient?.readyState === WebSocket.OPEN,streamSidMatch:streamSid === sid,retryCount:deliveryRetryCount},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-                            // #endregion
                             // User is speaking or client not ready - retry faster when they're done
                             if (deliveryRetryCount < maxDeliveryRetries - 1) {
                               deliveryRetryCount++;
@@ -3653,9 +3619,6 @@ wss.on('connection', (ws, req) => {
                 console.error('Error code:', errorDetails.code || 'unknown');
                 console.error('Error message:', errorDetails.message || errorDetails || 'No message provided');
                 
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:3246',message:'OpenAI error detected',data:{errorType:errorDetails.type,errorCode:errorDetails.code,errorMessage:errorDetails.message,streamSid:streamSid},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
-                // #endregion
                 
                 // CRITICAL: Handle rate limit errors with retry logic
                 const isRateLimit = errorDetails.code === 'rate_limit_exceeded' || 
@@ -3667,9 +3630,6 @@ wss.on('connection', (ws, req) => {
                                      errorDetails.message.includes('tokens per min')));
                 
                 if (isRateLimit) {
-                  // #region agent log
-                  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:3381',message:'RATE LIMIT ERROR DETECTED in response.done',data:{errorMessage:errorDetails.message,streamSid:streamSid,responseId:data.response?.id},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
-                  // #endregion
                   console.error('\n🚨🚨🚨 RATE LIMIT ERROR DETECTED - RESPONSE FAILED 🚨🚨🚨');
                   console.error('OpenAI API rate limit exceeded - this causes delays and silence!');
                   console.error('Error message:', errorDetails.message);
@@ -3697,9 +3657,6 @@ wss.on('connection', (ws, req) => {
                   // Retry the response creation after rate limit clears
                   setTimeout(() => {
                     if (openaiClient && openaiClient.readyState === WebSocket.OPEN && streamSid === sid) {
-                      // #region agent log
-                      fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:3400',message:'Retrying after rate limit',data:{waitTime:waitTime,streamSid:streamSid,responseInProgress:responseInProgress,userIsSpeaking:userIsSpeaking,isDeliveryConfirmation,isNameConfirmation,isAddressConfirmation},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
-                      // #endregion
                       console.log('✓ Retrying response creation after rate limit cleared');
                       responseInProgress = false; // Clear flag to allow retry
                       
@@ -3832,11 +3789,8 @@ wss.on('connection', (ws, req) => {
             } else if (data.response?.status === 'completed') {
               console.log('✓ Response completed successfully');
             } else if (data.response?.status === 'incomplete') {
-              // #region agent log
               const incompleteReason = data.response?.status_details?.reason || 'unknown';
               console.warn(`⚠️  Response INCOMPLETE - reason: ${incompleteReason}`);
-              fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:response.done',message:'Response incomplete',data:{reason:incompleteReason,maxOutputTokens:TOKEN_BUDGET.MAX_OUTPUT_TOKENS,streamSid:streamSid},timestamp:Date.now(),sessionId:'debug-session',runId:'incomplete-fix',hypothesisId:'MAX_TOKENS'})}).catch(()=>{});
-              // #endregion
               if (incompleteReason === 'max_output_tokens') {
                 console.error('🚨 Response cut off due to max_output_tokens limit! Current limit:', TOKEN_BUDGET.MAX_OUTPUT_TOKENS);
               }
