@@ -345,22 +345,29 @@ function createConversationSummary(order) {
 function getCoreRulesPrompt() {
   return `Pizza assistant for Uncle Sal's. Max 1-2 short sentences per response.
 
-CRITICAL TOOL REQUIREMENT:
-When customer orders ANY food item (pizza, fries, wings, soda, etc.), you MUST:
-1. FIRST: Call add_item_to_order tool with the item name, size, and quantity
-2. THEN: Confirm verbally "Got it, [item]. What else?"
-DO NOT just talk about items - you MUST call the tool to add them to the order!
+CRITICAL TOOL REQUIREMENTS - YOU MUST CALL THESE TOOLS:
+1. add_item_to_order - Call IMMEDIATELY when customer orders ANY food item
+2. set_delivery_method - Call when customer says "pickup" or "delivery"
+3. set_address - Call IMMEDIATELY when customer gives a delivery address
+4. set_customer_name - Call IMMEDIATELY when customer gives their name
+5. confirm_order - Call at the very end to finalize
 
-RULES:
+ORDER FLOW (follow this EXACT sequence):
 1. Greet: "Thanks for calling Uncle Sal's. What can I get you?"
-2. When customer says ANY menu item → Call add_item_to_order(name, size, quantity) IMMEDIATELY
-3. Wings: ask flavor first, then call add_item_to_order
-4. Done phrases ("that's it","all set"): Show exact total ONCE, then ask "Pickup or delivery?"
-5. Phone number is already captured - DO NOT ask for it
-6. PRICING: Use EXACT total from ORDER summary. NEVER say "about" or "XX.XX"
-7. ADDRESS: After customer provides address, confirm it back (e.g., "Perfect, [address]. Got it!")
-8. On confirm: call confirm_order, say "Awesome, thanks for ordering with Uncle Sal's today!"
-9. GOODBYE: Only after confirm_order is called
+2. When customer orders item → Call add_item_to_order → Confirm "Got it, [item]. What else?"
+3. When customer says done ("that's it", "all set") → Say exact total → Ask "Pickup or delivery?"
+4. When customer says pickup/delivery → Call set_delivery_method
+5. IF DELIVERY → Ask "What's the delivery address?" → When they give it → Call set_address → Confirm address back
+6. THEN ask "And what name for the order?" → When they give it → Call set_customer_name → Confirm name
+7. Finally → Call confirm_order → Say "Awesome, thanks for ordering with Uncle Sal's today!"
+
+CRITICAL RULES:
+- Phone number is already captured - DO NOT ask for it
+- ALWAYS ask for NAME after pickup/delivery is set
+- ALWAYS ask for ADDRESS if delivery is selected
+- Use EXACT total from ORDER summary - NEVER say "about"
+- After customer gives address → Call set_address with the EXACT address they said
+- After customer gives name → Call set_customer_name with the EXACT name they said
 
 CONFIRM PHRASES: "Got it.", "Perfect.", "Sure thing."`;
 }
@@ -876,9 +883,9 @@ app.post('/incoming-call', (req, res) => {
         clearTimeout(timeout);
       }
       
-      const twiml = new twilio.twiml.VoiceResponse();
-      twiml.say('Connecting you now.');
-      const stream = twiml.connect();
+        const twiml = new twilio.twiml.VoiceResponse();
+        twiml.say('Connecting you now.');
+        const stream = twiml.connect();
       
       // Use provided host or fallback
       const wsHost = host || req?.headers?.host || process.env.NGROK_URL?.replace('https://', '').replace('http://', '') || 'localhost:3000';
@@ -886,7 +893,7 @@ app.post('/incoming-call', (req, res) => {
       
       stream.stream({ url: wsUrl });
       
-      res.type('text/xml');
+        res.type('text/xml');
       res.status(200).send(twiml.toString());
       console.log('✓ TwiML response sent successfully to:', wsUrl);
       return true;
@@ -978,7 +985,7 @@ app.post('/incoming-call', (req, res) => {
       try {
         responseSent = true;
         clearTimeout(timeout);
-        res.type('text/xml');
+    res.type('text/xml');
         res.status(200).send(twiml.toString());
         console.log('✓ TwiML response sent (manual fallback)');
       } catch (e) {
@@ -1040,7 +1047,7 @@ app.use((err, req, res, next) => {
         const host = req.headers.host || process.env.NGROK_URL?.replace('https://', '').replace('http://', '') || 'localhost:3000';
         const wsUrl = host.startsWith('wss://') ? `${host}/media-stream` : `wss://${host}/media-stream`;
         const minimalXML = `<?xml version="1.0" encoding="UTF-8"?><Response><Say>Connecting you now.</Say><Connect><Stream url="${wsUrl}"/></Connect></Response>`;
-        res.type('text/xml');
+      res.type('text/xml');
         res.status(200).send(minimalXML);
         console.log('✓ Sent minimal XML fallback');
       } catch (e2) {
@@ -1543,8 +1550,8 @@ wss.on('connection', (ws, req) => {
           // OpenAI can handle frequent audio chunks
           // CRITICAL: Use safeSendToOpenAI to prevent errors
           const audioPayload = {
-            type: 'input_audio_buffer.append',
-            audio: data.media.payload
+                type: 'input_audio_buffer.append',
+                audio: data.media.payload
           };
           
           if (!safeSendToOpenAI(audioPayload, 'input_audio_buffer.append')) {
@@ -1651,6 +1658,10 @@ wss.on('connection', (ws, req) => {
                 address: order.address || 'N/A'
               });
               
+              // #region agent log
+              fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:log_order',message:'LOGGING_ORDER',data:{name:order.customerName||'NOT_SET',address:order.address||'NOT_SET',delivery:order.deliveryMethod||'NOT_SET',itemCount:validItems.length},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D_final_log'})}).catch(()=>{});
+              // #endregion
+              
               // Mark as logged to prevent duplicates
               order.logged = true;
               order.confirmed = true; // Mark as confirmed for logging purposes
@@ -1679,7 +1690,7 @@ wss.on('connection', (ws, req) => {
               audio: combinedAudio
             };
             if (safeSendToOpenAI(audioPayload, 'buffered audio flush')) {
-              audioBuffer = [];
+            audioBuffer = [];
             } else {
               console.warn('⚠️  Failed to send buffered audio - may be lost');
               audioBuffer = []; // Clear anyway to prevent memory issues
@@ -1848,12 +1859,12 @@ wss.on('connection', (ws, req) => {
     }
     
     try {
-      openaiClient = new WebSocket(openaiUrl, {
-        headers: {
-          'Authorization': `Bearer ${openaiApiKey}`,
-          'OpenAI-Beta': 'realtime=v1'
-        }
-      });
+    openaiClient = new WebSocket(openaiUrl, {
+      headers: {
+        'Authorization': `Bearer ${openaiApiKey}`,
+        'OpenAI-Beta': 'realtime=v1'
+      }
+    });
       
       // CRITICAL: Validate WebSocket was created successfully
       if (!openaiClient) {
@@ -1870,7 +1881,7 @@ wss.on('connection', (ws, req) => {
     openaiClient.on('open', () => {
       // CRITICAL: Wrap entire handler in try-catch
       try {
-        console.log('Connected to OpenAI Realtime API');
+      console.log('Connected to OpenAI Realtime API');
         
         // CRITICAL: Validate openaiClient is ready before sending
         if (!openaiClient || openaiClient.readyState !== WebSocket.OPEN) {
@@ -1890,10 +1901,10 @@ wss.on('connection', (ws, req) => {
           const defaultMenu = getDefaultMenuData();
           menuText = defaultMenu.menuText;
         }
-        
-        // Configure session with proper audio settings for Twilio
-        // Twilio uses mu-law (PCMU/G.711 ulaw) at 8kHz
-        // OpenAI Realtime supports 'pcm16' and 'mulaw' formats
+      
+      // Configure session with proper audio settings for Twilio
+      // Twilio uses mu-law (PCMU/G.711 ulaw) at 8kHz
+      // OpenAI Realtime supports 'pcm16' and 'mulaw' formats
         const sessionUpdatePayload = {
         type: 'session.update',
         session: {
@@ -2081,8 +2092,8 @@ wss.on('connection', (ws, req) => {
               
               // CRITICAL: Use safeSendToOpenAI to prevent errors
               const queuedAudioPayload = {
-                type: 'input_audio_buffer.append',
-                audio: queuedAudio
+                  type: 'input_audio_buffer.append',
+                  audio: queuedAudio
               };
               
               if (safeSendToOpenAI(queuedAudioPayload, 'queued audio flush')) {
@@ -2104,16 +2115,16 @@ wss.on('connection', (ws, req) => {
                 
                 // Double-check connection is still valid and this is still the same call
                 if (openaiClient && openaiClient.readyState === WebSocket.OPEN && streamSid === sid) {
-                  console.log(`Triggering initial greeting (attempt ${attempt}/${maxAttempts})...`);
-                  // First, add a system message to establish conversation context
+                    console.log(`Triggering initial greeting (attempt ${attempt}/${maxAttempts})...`);
+                    // First, add a system message to establish conversation context
                   const greetingPayload = {
-                    type: 'conversation.item.create',
-                    item: {
-                      type: 'message',
-                      role: 'system',
-                      content: [
-                        {
-                          type: 'input_text',
+                      type: 'conversation.item.create',
+                      item: {
+                        type: 'message',
+                        role: 'system',
+                        content: [
+                          {
+                            type: 'input_text',
                           text: 'The customer just called. You MUST immediately greet them by saying the COMPLETE sentence: "Thanks for calling Uncle Sal\'s Pizza. What would you like to order?" - FINISH THE ENTIRE SENTENCE. After they order something and finish speaking COMPLETELY, ALWAYS confirm what you heard (e.g., "Perfect. Large pepperoni pizza, anything else?") and ask a follow-up question like "What else can I get you?" - CRITICAL: WAIT for them to finish speaking COMPLETELY before responding. NEVER interrupt. NEVER say "take your time" or similar phrases. IMPORTANT: Once you have asked for the order and they have provided items, NEVER ask "What would you like to order?" again. Instead, if you need something more, ask "What else can I get you?" or "Anything else?"'
                         }
                       ]
@@ -2186,8 +2197,8 @@ wss.on('connection', (ws, req) => {
               console.error('❌ BLOCKING response - user is currently speaking! Cancelling...');
               if (streamSid === sid) {
                 const cancelPayload = {
-                  type: 'response.cancel',
-                  response_id: data.response?.id
+                    type: 'response.cancel',
+                    response_id: data.response?.id
                 };
                 
                 if (safeSendToOpenAI(cancelPayload, 'response.cancel (user speaking)')) {
@@ -2557,7 +2568,7 @@ wss.on('connection', (ws, req) => {
                         logTokenUsage(streamSid, estimatedPrompt, TOKEN_BUDGET.MAX_OUTPUT_TOKENS, 'tool-call-response');
                         
                         if (safeSendToOpenAI(responseCreatePayload, 'response.create after tool call')) {
-                          console.log('✓ Response creation sent after tool call');
+                        console.log('✓ Response creation sent after tool call');
                         } else {
                           responseInProgress = false; // Reset flag on failure
                           console.error('❌ Failed to create response after tool call');
@@ -2662,23 +2673,23 @@ wss.on('connection', (ws, req) => {
                     try {
                       responseInProgress = true;
                       const greetingResponsePayload = {
-                        type: 'response.create',
-                        response: {
-                          modalities: ['audio', 'text']
-                        }
+                    type: 'response.create',
+                    response: {
+                      modalities: ['audio', 'text']
+                    }
                       };
                       
                       if (safeSendToOpenAI(greetingResponsePayload, 'response.create (greeting fallback)')) {
                         console.log('✓ Greeting response creation sent (fallback)');
-                      } else {
+                } else {
                         responseInProgress = false;
                         console.error('❌ Failed to create greeting response (fallback)');
                       }
                     } catch (error) {
                       console.error('Error creating greeting response (fallback):', error);
                       responseInProgress = false;
-                    }
-                  } else {
+                }
+              } else {
                     console.log('✓ Greeting response already in progress or connection not ready - skipping fallback');
                   }
                 }, 300); // CRITICAL: Reduced to 300ms for faster greeting - menu is pre-cached, no delay needed
@@ -2705,6 +2716,11 @@ wss.on('connection', (ws, req) => {
             // User spoke - log what they said
             if (data.transcript) {
               console.log('✓ User said:', data.transcript);
+              
+              // #region agent log
+              // DEBUG: Track user input for name/address detection
+              fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:user_transcript',message:'USER_SAID',data:{transcript:data.transcript,hasName:activeOrders.get(streamSid)?.customerName||'NOT_SET',hasAddress:activeOrders.get(streamSid)?.address||'NOT_SET',deliveryMethod:activeOrders.get(streamSid)?.deliveryMethod||'NOT_SET'},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A_user_input'})}).catch(()=>{});
+              // #endregion
               
               // TOKEN OPTIMIZATION: Track last 2 user turns for memory summary
               const summary = conversationSummaries.get(streamSid) || { summary: '', lastUserTurns: [], lastAssistantTurns: [] };
@@ -2982,7 +2998,7 @@ wss.on('connection', (ws, req) => {
                       if (methodValue === 'pickup' || methodValue === 'delivery') {
                         currentOrder.deliveryMethod = methodValue;
                         console.log('✅ Set delivery method:', methodValue);
-                        activeOrders.set(streamSid, currentOrder);
+                      activeOrders.set(streamSid, currentOrder);
                       } else {
                         console.error('❌ INVALID: Delivery method is not "pickup" or "delivery":', toolCall.input.method);
                         console.error('❌ Rejecting invalid delivery method - this prevents mystery rows');
@@ -3108,6 +3124,10 @@ wss.on('connection', (ws, req) => {
                       customerName: currentOrder.customerName,
                       items: currentOrder.items.length
                     });
+                    
+                    // #region agent log
+                    fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:set_address',message:'TOOL_CALLED_SET_ADDRESS',data:{inputAddress:toolCall.input?.address||'MISSING',orderBefore:currentOrder.address||'NOT_SET'},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'C_address_tool'})}).catch(()=>{});
+                    // #endregion
                     
                     if (toolCall.input?.address) {
                       // CRITICAL: Ensure address is properly saved and delivery method is set to 'delivery'
@@ -3263,6 +3283,10 @@ wss.on('connection', (ws, req) => {
                       deliveryMethod: currentOrder.deliveryMethod,
                       items: currentOrder.items.length
                     });
+                    
+                    // #region agent log
+                    fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:set_customer_name',message:'TOOL_CALLED_SET_NAME',data:{inputName:toolCall.input?.name||'MISSING',orderBefore:currentOrder.customerName||'NOT_SET'},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'B_name_tool'})}).catch(()=>{});
+                    // #endregion
                     
                     if (toolCall.input?.name) {
                       currentOrder.customerName = toolCall.input.name;
@@ -3529,6 +3553,10 @@ wss.on('connection', (ws, req) => {
             if (data.transcript) {
               console.log('AI said:', data.transcript);
               
+              // #region agent log
+              fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:ai_response',message:'AI_SAID',data:{transcript:data.transcript,currentName:activeOrders.get(streamSid)?.customerName||'NOT_SET',currentAddress:activeOrders.get(streamSid)?.address||'NOT_SET'},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'E_ai_output'})}).catch(()=>{});
+              // #endregion
+              
               // CRITICAL: Check if AI mentioned items but didn't call the tool
               // NOTE: Skip greetings and store name mentions (e.g., "Thanks for calling Uncle Sal's Pizza")
               const transcript = data.transcript.toLowerCase();
@@ -3626,10 +3654,10 @@ wss.on('connection', (ws, req) => {
                         };
                         
                         if (safeSendToOpenAI(orderSummaryPayload, 'loop-break message')) {
-                          consecutiveSimilarResponses = 0; // Reset after intervention
-                          console.log('✓ Loop-break message sent - preventing repeat');
-                          // Don't track this duplicate response
-                          return; // Exit early to prevent tracking
+                        consecutiveSimilarResponses = 0; // Reset after intervention
+                        console.log('✓ Loop-break message sent - preventing repeat');
+                        // Don't track this duplicate response
+                        return; // Exit early to prevent tracking
                         } else {
                           console.error('❌ Failed to send loop-break message');
                         }
@@ -3811,8 +3839,8 @@ wss.on('connection', (ws, req) => {
             // CRITICAL: Only reset responseInProgress if response didn't fail, or if it failed but wasn't a critical confirmation
             // If it was a critical confirmation failure, the failed handler will manage responseInProgress
             if (!responseFailed || !isCriticalConfirmation) {
-              responseInProgress = false; // Mark that response is complete, ready for next one
-              console.log('✓ responseInProgress reset to false');
+            responseInProgress = false; // Mark that response is complete, ready for next one
+            console.log('✓ responseInProgress reset to false');
             } else {
               console.log('⚠️  Keeping responseInProgress true - failed handler will manage retry');
             }
@@ -4308,17 +4336,17 @@ wss.on('connection', (ws, req) => {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
         
-        fetch(zapierWebhookUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+      fetch(zapierWebhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(orderData),
           signal: controller.signal // CRITICAL: Use AbortController for timeout
-        })
-        .then(response => {
+      })
+      .then(response => {
           clearTimeout(timeoutId);
-          console.log('✓ Order sent to Zapier:', response.status);
-        })
-        .catch(error => {
+        console.log('✓ Order sent to Zapier:', response.status);
+      })
+      .catch(error => {
           clearTimeout(timeoutId);
           // CRITICAL: Log error but DO NOT throw - Zapier errors should NEVER affect calls
           if (error.name === 'AbortError') {
@@ -4483,26 +4511,26 @@ setInterval(() => {
 // Initialize integrations on server start (non-blocking)
 // Use setTimeout to ensure server starts even if integrations fail
 setTimeout(() => {
-  console.log('Initializing integrations...');
-  (async () => {
-    try {
-      const initialized = await googleSheets.initializeGoogleSheets();
-      if (initialized) {
-        await googleSheets.initializeSheetHeaders();
-        console.log('✅ Google Sheets ready for logging');
-      } else {
-        console.warn('⚠️  Google Sheets not configured - orders will not be logged to Google Sheets');
+console.log('Initializing integrations...');
+(async () => {
+  try {
+    const initialized = await googleSheets.initializeGoogleSheets();
+    if (initialized) {
+      await googleSheets.initializeSheetHeaders();
+      console.log('✅ Google Sheets ready for logging');
+    } else {
+      console.warn('⚠️  Google Sheets not configured - orders will not be logged to Google Sheets');
         console.warn('⚠️  To enable: Set GOOGLE_SHEETS_CREDENTIALS_BASE64 and GOOGLE_SHEETS_ID in environment variables');
-      }
-    } catch (error) {
-      console.error('❌ Error initializing Google Sheets:', error);
-      console.error('❌ Orders will not be logged to Google Sheets until this is fixed');
-      console.error('❌ Server will continue running - this is non-critical');
     }
-  })();
+  } catch (error) {
+    console.error('❌ Error initializing Google Sheets:', error);
+    console.error('❌ Orders will not be logged to Google Sheets until this is fixed');
+      console.error('❌ Server will continue running - this is non-critical');
+  }
+})();
   
   try {
-    posSystems.initializePOS();
+posSystems.initializePOS();
   } catch (error) {
     console.error('❌ Error initializing POS systems:', error);
     console.error('❌ Server will continue running - this is non-critical');
