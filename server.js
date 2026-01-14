@@ -3479,33 +3479,42 @@ wss.on('connection', (ws, req) => {
               console.log('AI said:', data.transcript);
               
               // CRITICAL: Check if AI mentioned items but didn't call the tool
+              // NOTE: Skip greetings and store name mentions (e.g., "Thanks for calling Uncle Sal's Pizza")
               const transcript = data.transcript.toLowerCase();
-              const itemKeywords = ['pizza', 'fries', 'wings', 'soda', 'drink', 'knots', 'bread', 'salad', 'sub'];
-              const mentionedItems = itemKeywords.filter(keyword => transcript.includes(keyword));
-              const orderForCheck = activeOrders.get(streamSid);
+              const isGreeting = transcript.includes('thanks for calling') || 
+                                 transcript.includes('what would you like') || 
+                                 transcript.includes('what can i get') ||
+                                 transcript.includes('how can i help');
               
-              if (mentionedItems.length > 0 && orderForCheck && orderForCheck.items.length === 0) {
-                console.error('❌❌❌ CRITICAL: AI mentioned items but DID NOT call add_item_to_order tool! ❌❌❌');
-                console.error('❌ Transcript:', data.transcript);
-                console.error('❌ Mentioned keywords:', mentionedItems);
-                console.error('❌ Order has', orderForCheck.items.length, 'items - should have called tool!');
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:3487',message:'AI mentioned items but did not call tool',data:{transcript:data.transcript,mentionedItems:mentionedItems,orderItemsCount:orderForCheck.items.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-                // #endregion
+              // Only check for missed tool calls if this is NOT a greeting
+              const orderForCheck = activeOrders.get(streamSid);
+              if (!isGreeting && orderForCheck) {
+                const itemKeywords = ['pepperoni', 'cheese pizza', 'plain pizza', 'french fries', 'buffalo wings', 'hot wings', 'garlic knots', 'calzone', 'stromboli'];
+                const mentionedItems = itemKeywords.filter(keyword => transcript.includes(keyword));
                 
-                // CRITICAL: Force tool call by updating session instructions to explicitly require it
-                setTimeout(() => {
-                  if (openaiClient && openaiClient.readyState === WebSocket.OPEN && streamSid === sid) {
-                    console.log('🔄 Forcing tool call by updating session instructions...');
-                    const forceToolPayload = {
-                      type: 'session.update',
-                      session: {
-                        instructions: buildCompactInstructions(orderForCheck, menu, null) + '\n\nCRITICAL: The customer just mentioned items but they are NOT in the order. You MUST call add_item_to_order tool NOW. Do NOT generate another response without calling the tool first.'
-                      }
-                    };
-                    safeSendToOpenAI(forceToolPayload, 'session.update (force tool call)');
-                  }
-                }, 500);
+                if (mentionedItems.length > 0 && orderForCheck.items.length === 0) {
+                  console.error('❌❌❌ CRITICAL: AI mentioned items but DID NOT call add_item_to_order tool! ❌❌❌');
+                  console.error('❌ Transcript:', data.transcript);
+                  console.error('❌ Mentioned keywords:', mentionedItems);
+                  console.error('❌ Order has', orderForCheck.items.length, 'items - should have called tool!');
+                  // #region agent log
+                  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:3487',message:'AI mentioned items but did not call tool',data:{transcript:data.transcript,mentionedItems:mentionedItems,orderItemsCount:orderForCheck.items.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+                  // #endregion
+                  
+                  // CRITICAL: Force tool call by updating session instructions to explicitly require it
+                  setTimeout(() => {
+                    if (openaiClient && openaiClient.readyState === WebSocket.OPEN && streamSid === sid) {
+                      console.log('🔄 Forcing tool call by updating session instructions...');
+                      const forceToolPayload = {
+                        type: 'session.update',
+                        session: {
+                          instructions: buildCompactInstructions(orderForCheck, menu, null) + '\n\nCRITICAL: The customer just mentioned items but they are NOT in the order. You MUST call add_item_to_order tool NOW. Do NOT generate another response without calling the tool first.'
+                        }
+                      };
+                      safeSendToOpenAI(forceToolPayload, 'session.update (force tool call)');
+                    }
+                  }, 500);
+                }
               }
               
               // Check if address was confirmed back to customer
