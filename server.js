@@ -345,7 +345,7 @@ function getCoreRulesPrompt() {
 
 RULES:
 1. Greet: "Thanks for calling Uncle Sal's. What can I get you?"
-2. CRITICAL: When customer orders ANY item, you MUST call add_item_to_order tool FIRST, then confirm.
+2. MANDATORY TOOL USAGE: When customer orders ANY item (e.g., "pizza", "fries", "soda"), you MUST call add_item_to_order tool IMMEDIATELY. DO NOT just say "I'll add that" - you MUST call the tool. Example: Customer says "large pepperoni pizza" → Call add_item_to_order(name="pepperoni pizza", size="large") BEFORE saying anything else.
 3. Wings: ask flavor first, then call add_item_to_order.
 4. Done phrases ("that's it","all set"): FIRST show exact total from ORDER summary, THEN ask "Pickup or delivery?"
 5. Collect name, address (if delivery). Phone number is already captured - DO NOT ask for it.
@@ -1862,7 +1862,7 @@ wss.on('connection', (ws, req) => {
             {
               type: 'function',
               name: 'add_item_to_order',
-              description: 'Add an item to the customer\'s order. Call this whenever the customer orders something.',
+              description: 'MANDATORY: You MUST call this tool immediately when the customer orders ANY item. Do NOT just mention items in your response - you MUST call this tool to add them to the order. If customer says "large pepperoni pizza", call this tool with name="pepperoni pizza", size="large". If customer says "fries", call this tool with name="french fries". DO NOT generate text responses about items without calling this tool.',
               parameters: {
                 type: 'object',
                 properties: {
@@ -3445,6 +3445,22 @@ wss.on('connection', (ws, req) => {
             // Extract transcript if available
             if (data.transcript) {
               console.log('AI said:', data.transcript);
+              
+              // CRITICAL: Check if AI mentioned items but didn't call the tool
+              const transcript = data.transcript.toLowerCase();
+              const itemKeywords = ['pizza', 'fries', 'wings', 'soda', 'drink', 'knots', 'bread', 'salad', 'sub'];
+              const mentionedItems = itemKeywords.filter(keyword => transcript.includes(keyword));
+              const orderForCheck = activeOrders.get(streamSid);
+              
+              if (mentionedItems.length > 0 && orderForCheck && orderForCheck.items.length === 0) {
+                console.error('❌❌❌ CRITICAL: AI mentioned items but DID NOT call add_item_to_order tool! ❌❌❌');
+                console.error('❌ Transcript:', data.transcript);
+                console.error('❌ Mentioned keywords:', mentionedItems);
+                console.error('❌ Order has', orderForCheck.items.length, 'items - should have called tool!');
+                // #region agent log
+                fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:3447',message:'AI mentioned items but did not call tool',data:{transcript:data.transcript,mentionedItems:mentionedItems,orderItemsCount:orderForCheck.items.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+                // #endregion
+              }
               
               // CRITICAL: Enhanced loop detection - prevent ANY repetition
               const now = Date.now();
