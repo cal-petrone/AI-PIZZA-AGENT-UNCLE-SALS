@@ -1617,7 +1617,53 @@ wss.on('connection', (ws, req) => {
               console.warn('⚠️  Incomplete orders are NOT logged to prevent mystery rows and wrong data');
             }
           } else if (order && order.items.length > 0 && !order.confirmed) {
-            console.warn('⚠️  Order has items but was never confirmed - NOT logging');
+            // CRITICAL: Log orders with items even if not formally confirmed
+            // This handles cases where customers hang up before confirming
+            console.log('📝 Order has items but was never confirmed - checking if we can log anyway...');
+            
+            const hasName = !!order.customerName && order.customerName.trim().length > 0;
+            const hasDeliveryMethod = !!order.deliveryMethod;
+            const hasAddress = order.deliveryMethod !== 'delivery' || (!!order.address && order.address.trim().length > 0);
+            const validItems = order.items.filter(item => item.name && item.name.length > 0 && (item.price || 0) > 0);
+            const hasValidItems = validItems.length > 0;
+            
+            console.log('🔍 Unconfirmed order validation:', {
+              hasName,
+              hasDeliveryMethod,
+              hasAddress,
+              hasValidItems,
+              customerName: order.customerName || 'MISSING',
+              deliveryMethod: order.deliveryMethod || 'MISSING',
+              address: order.address || 'MISSING',
+              itemsCount: validItems.length
+            });
+            
+            // Log if we have items and essential info (even without formal confirmation)
+            // This ensures orders are captured even if customer hangs up early
+            if (hasValidItems) {
+              console.log('✅ Order has valid items - logging to Google Sheets (even without formal confirmation)');
+              console.log('📋 Order details:', {
+                items: validItems.length,
+                itemsList: validItems.map(i => `${i.quantity}x ${i.name}`).join(', '),
+                deliveryMethod: order.deliveryMethod || 'not specified',
+                customerName: order.customerName || 'not provided',
+                customerPhone: order.customerPhone || 'not provided',
+                address: order.address || 'N/A'
+              });
+              
+              // Mark as logged to prevent duplicates
+              order.logged = true;
+              order.confirmed = true; // Mark as confirmed for logging purposes
+              activeOrders.set(streamSid, order);
+              
+              logOrder(order, storeConfig || {}).catch(error => {
+                console.error('❌ Error logging unconfirmed order:', error);
+                order.logged = false;
+                activeOrders.set(streamSid, order);
+              });
+            } else {
+              console.warn('⚠️  Order has no valid items - NOT logging');
+            }
           }
           
           // Clear audio buffer timer
