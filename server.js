@@ -3490,8 +3490,37 @@ wss.on('connection', (ws, req) => {
                 console.error('❌ Mentioned keywords:', mentionedItems);
                 console.error('❌ Order has', orderForCheck.items.length, 'items - should have called tool!');
                 // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:3447',message:'AI mentioned items but did not call tool',data:{transcript:data.transcript,mentionedItems:mentionedItems,orderItemsCount:orderForCheck.items.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+                fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:3487',message:'AI mentioned items but did not call tool',data:{transcript:data.transcript,mentionedItems:mentionedItems,orderItemsCount:orderForCheck.items.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
                 // #endregion
+                
+                // CRITICAL: Force tool call by updating session instructions to explicitly require it
+                setTimeout(() => {
+                  if (openaiClient && openaiClient.readyState === WebSocket.OPEN && streamSid === sid) {
+                    console.log('🔄 Forcing tool call by updating session instructions...');
+                    const forceToolPayload = {
+                      type: 'session.update',
+                      session: {
+                        instructions: buildCompactInstructions(orderForCheck, menu, null) + '\n\nCRITICAL: The customer just mentioned items but they are NOT in the order. You MUST call add_item_to_order tool NOW. Do NOT generate another response without calling the tool first.'
+                      }
+                    };
+                    safeSendToOpenAI(forceToolPayload, 'session.update (force tool call)');
+                  }
+                }, 500);
+              }
+              
+              // Check if address was confirmed back to customer
+              if (orderForCheck && orderForCheck.address && !orderForCheck.addressConfirmed) {
+                const addressConfirmPhrases = ['perfect', 'got it', 'sounds good', 'okay', 'alright', 'confirmed', 'correct'];
+                const addressInTranscript = orderForCheck.address.toLowerCase().split(' ').slice(0, 3).some(word => 
+                  word.length > 3 && transcript.includes(word)
+                );
+                const confirmedAddress = addressConfirmPhrases.some(phrase => transcript.includes(phrase));
+                
+                if (confirmedAddress || addressInTranscript) {
+                  orderForCheck.addressConfirmed = true;
+                  activeOrders.set(streamSid, orderForCheck);
+                  console.log('✅ Address confirmed back to customer');
+                }
               }
               
               // CRITICAL: Enhanced loop detection - prevent ANY repetition
