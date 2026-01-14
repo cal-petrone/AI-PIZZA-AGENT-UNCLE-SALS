@@ -1970,7 +1970,7 @@ wss.on('connection', (ws, req) => {
             {
               type: 'function',
               name: 'set_address',
-              description: 'Set the delivery address',
+              description: 'MANDATORY: Set the delivery address. You MUST call this tool IMMEDIATELY when the customer provides ANY delivery address. Do NOT just talk about the address - CALL THIS TOOL.',
               parameters: {
                 type: 'object',
                 properties: {
