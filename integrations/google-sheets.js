@@ -203,13 +203,22 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
         return `${qty}x ${size}${item.name}`;
       }).join(', ');
       
-      // Prepare row data - match your Google Sheet columns exactly (6 columns: A-F)
-      // Column A: Name
+      // Prepare row data - match your Google Sheet columns exactly (7 columns: A-G)
+      // Column A: Name (capitalized)
       // Column B: Phone Number
-      // Column C: Pick Up/Delivery
-      // Column D: Pick Up Time (EST)
-      // Column E: Price
-      // Column F: Order Details
+      // Column C: Pick Up/Delivery (just "Pickup" or "Delivery")
+      // Column D: Delivery Address (address if delivery, "-" if pickup)
+      // Column E: Estimated Pick Up Time (EST)
+      // Column F: Price
+      // Column G: Order Details
+      
+      // Helper function to capitalize first letter of each word
+      const capitalizeWords = (str) => {
+        if (!str || typeof str !== 'string') return str;
+        return str.trim().split(' ').map(word => 
+          word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+        ).join(' ');
+      };
       
     // CRITICAL: Use customerPhone if available, format as 315-876-3210
     // Do NOT use order.from as it contains callSid, not phone number
@@ -228,27 +237,8 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
       order.deliveryMethod = null; // Clear invalid value
     }
     
-    // If delivery is selected but no address, log as "delivery - address not provided"
-    let deliveryDisplay;
-    if (deliveryMethodValue === 'delivery') {
-      if (order.address && order.address.trim().length > 0) {
-        deliveryDisplay = `delivery - ${order.address.trim()}`;
-      } else {
-        console.warn('⚠️  WARNING: Delivery selected but no address provided');
-        deliveryDisplay = 'delivery - address not provided';
-      }
-    } else if (deliveryMethodValue === 'pickup') {
-      deliveryDisplay = 'pickup';
-    } else {
-      // CRITICAL: Only use fallback if deliveryMethod is truly not set - never use invalid values
-      deliveryDisplay = 'not specified';
-      if (order.deliveryMethod) {
-        console.error('❌ INVALID: Delivery method is not "pickup" or "delivery":', order.deliveryMethod);
-        console.error('❌ Using fallback "not specified" to prevent mystery row');
-      }
-    }
-    
-    console.log('📋 Delivery display:', deliveryDisplay, '| Method:', order.deliveryMethod, '| Address:', order.address || 'none');
+    // Log delivery method status
+    console.log('📋 Raw delivery method:', order.deliveryMethod, '| Address:', order.address || 'none');
     
     // Calculate estimated pickup time based on order complexity
     // Base time: 15 minutes for simple orders, add time for complexity
@@ -287,12 +277,13 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
     });
     
     // DEBUG: Log exact values being sent to Google Sheets
-    console.log('🔍🔍🔍 GOOGLE SHEETS - EXACT VALUES BEING LOGGED:');
-    console.log('🔍 Column A (Name):', order.customerName || 'not provided', '| Original:', order.customerName);
-    console.log('🔍 Column B (Phone):', phoneNumber, '| Original:', order.customerPhone);
-    console.log('🔍 Column C (Pick Up/Delivery):', deliveryDisplay, '| Original:', order.deliveryMethod, '| Address:', order.address || 'none');
-    console.log('🔍 Column D (Pick Up Time):', pickupTimeString, '| Estimated:', estimatedMinutes, 'minutes');
-    console.log('🔍 Column F (Order Details):', itemsString);
+    console.log('🔍🔍🔍 GOOGLE SHEETS - EXACT VALUES BEING LOGGED (7 columns):');
+    console.log('🔍 Column A (Name):', capitalizeWords(order.customerName) || 'Not Provided');
+    console.log('🔍 Column B (Phone):', phoneNumber);
+    console.log('🔍 Column C (Pick Up/Delivery):', order.deliveryMethod === 'delivery' ? 'Delivery' : order.deliveryMethod === 'pickup' ? 'Pickup' : '-');
+    console.log('🔍 Column D (Delivery Address):', order.deliveryMethod === 'delivery' ? capitalizeWords(order.address) || 'Address Not Provided' : '-');
+    console.log('🔍 Column E (Pick Up Time):', pickupTimeString, '| Estimated:', estimatedMinutes, 'minutes');
+    console.log('🔍 Column G (Order Details):', capitalizeWords(itemsString));
     console.log('🔍 Full order object:', {
       customerName: order.customerName,
       customerPhone: order.customerPhone,
@@ -317,47 +308,40 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
     }
     
     // Validate and prepare each column with strict type checking
+    // Column A: Name (capitalized)
     const validatedName = (order.customerName && typeof order.customerName === 'string' && order.customerName.trim().length > 0 && !/^\d+$/.test(order.customerName.trim())) 
-      ? order.customerName.trim() 
-      : 'not provided'; // Column A: Name (must be valid string, not just numbers)
+      ? capitalizeWords(order.customerName.trim())
+      : 'Not Provided';
     
     // Column B: Phone - already formatted as 315-876-3210 by formatPhoneNumber()
-    const validatedPhone = phoneNumber || 'not provided';
+    const validatedPhone = phoneNumber || 'Not Provided';
     
-    // CRITICAL: Ensure deliveryDisplay is properly formatted and never contains just numbers
-    // This prevents the "46031" mystery row issue where a ZIP code or number gets into the delivery column
-    let validatedDelivery = 'not specified';
+    // Column C: Pick Up/Delivery (just "Pickup" or "Delivery", capitalized)
+    // Column D: Delivery Address (address if delivery, "-" if pickup)
+    let validatedDeliveryMethod = '-';
+    let validatedAddress = '-';
     
-    // CRITICAL: First validate that deliveryMethod is actually a valid value (pickup or delivery)
-    // If it's not valid, use fallback to prevent corrupted data
     const isValidDeliveryMethod = order.deliveryMethod === 'pickup' || order.deliveryMethod === 'delivery';
     
     if (!isValidDeliveryMethod) {
       console.error('❌ INVALID: Delivery method is not valid (pickup/delivery):', order.deliveryMethod);
-      // Check if it's a number (like "46031") - this is the mystery row issue
-      if (/^\d+$/.test(order.deliveryMethod) && order.deliveryMethod.length > 2) {
-        console.error('❌ INVALID: Delivery method is a number (like ZIP code):', order.deliveryMethod);
-        validatedDelivery = 'not specified'; // Use fallback instead of corrupted data
-      } else {
-        validatedDelivery = 'not specified'; // Use fallback for any invalid value
-      }
+      validatedDeliveryMethod = '-';
+      validatedAddress = '-';
     } else if (order.deliveryMethod === 'delivery') {
-      // CRITICAL: For delivery, ALWAYS include the address if it exists
+      validatedDeliveryMethod = 'Delivery';
+      // Format address with capitalization
       if (order.address && typeof order.address === 'string' && order.address.trim().length > 0) {
-        validatedDelivery = `delivery - ${order.address.trim()}`;
+        validatedAddress = capitalizeWords(order.address.trim());
       } else {
-        console.warn('⚠️  WARNING: Delivery selected but no address provided - logging as "delivery - address not provided"');
-        validatedDelivery = 'delivery - address not provided';
+        console.warn('⚠️  WARNING: Delivery selected but no address provided');
+        validatedAddress = 'Address Not Provided';
       }
     } else if (order.deliveryMethod === 'pickup') {
-      validatedDelivery = 'pickup';
+      validatedDeliveryMethod = 'Pickup';
+      validatedAddress = '-';
     }
     
-    // Final safety check: ensure validatedDelivery is never just numbers (prevents "46031" issue)
-    if (/^\d+$/.test(validatedDelivery) && validatedDelivery.length > 2) {
-      console.error('❌ INVALID: Final delivery display is just numbers (not valid):', validatedDelivery);
-      validatedDelivery = 'not specified'; // Use fallback instead
-    }
+    console.log('📋 Delivery method:', validatedDeliveryMethod, '| Address:', validatedAddress);
     
     // Validate time format - must include comma and match pattern
     let validatedTime = pickupTimeString;
@@ -370,18 +354,21 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
       validatedTime = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
     }
     
+    // Column F: Price (formatted with $ sign)
     const validatedPrice = (typeof total === 'number' && !isNaN(total) && total >= 0) 
-      ? total.toFixed(2) 
-      : '0.00'; // Column E: Price (must be valid number >= 0)
+      ? `$${total.toFixed(2)}`
+      : '$0.00';
     
+    // Column G: Order Details (capitalized)
     const validatedItems = (itemsString && typeof itemsString === 'string' && itemsString.trim().length > 0) 
-      ? itemsString.trim() 
-      : 'no items'; // Column F: Items (must be valid string)
+      ? capitalizeWords(itemsString.trim())
+      : 'No Items';
     
     // Final validation: Check for invalid patterns that could cause mystery rows
-    const validatedRow = [validatedName, validatedPhone, validatedDelivery, validatedTime, validatedPrice, validatedItems];
+    // New column order: Name, Phone, Method, Address, Time, Price, Items (7 columns)
+    const validatedRow = [validatedName, validatedPhone, validatedDeliveryMethod, validatedAddress, validatedTime, validatedPrice, validatedItems];
     
-    console.log('📋 Validated row data:', validatedRow);
+    console.log('📋 Validated row data (7 columns):', validatedRow);
     
     // CRITICAL: Final validation check - prevent any invalid patterns
     const hasInvalidPattern = validatedRow.some((cell, index) => {
@@ -390,13 +377,13 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
         console.error('❌ INVALID: Name is just numbers:', cell);
         return true;
       }
-      // Column C (Delivery) - must NOT be just numbers (this is the "46031" issue)
-      if (index === 2 && /^\d+$/.test(cell) && cell.length > 2) {
-        console.error('❌ INVALID: Delivery method is just numbers:', cell);
+      // Column C (Delivery Method) - must be "Pickup", "Delivery", or "-"
+      if (index === 2 && !['Pickup', 'Delivery', '-'].includes(cell)) {
+        console.error('❌ INVALID: Delivery method is not valid:', cell);
         return true;
       }
-      // Column D (Time) - must include comma and match pattern
-      if (index === 3 && (!cell.includes(',') || !/^[A-Z][a-z]{2}\s+\d{1,2},\s+\d{1,2}:\d{2}\s+(AM|PM)$/.test(cell))) {
+      // Column E (Time) - must include comma and match pattern
+      if (index === 4 && (!cell.includes(',') || !/^[A-Z][a-z]{2}\s+\d{1,2},\s+\d{1,2}:\d{2}\s+(AM|PM)$/.test(cell))) {
         console.error('❌ INVALID: Time format is incorrect:', cell);
         return true;
       }
@@ -417,10 +404,10 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
     
     const row = validatedRow;
       
-      // Append to sheet - only write to columns A through F
+      // Append to sheet - write to columns A through G (7 columns)
       const response = await sheetsClient.spreadsheets.values.append({
         spreadsheetId: spreadsheetId,
-        range: 'Sheet1!A:F', // Match your 6 columns exactly
+        range: 'Sheet1!A:G', // Match your 7 columns exactly
         valueInputOption: 'USER_ENTERED',
         insertDataOption: 'INSERT_ROWS',
         resource: {
@@ -484,7 +471,7 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
 
 /**
  * Create header row if sheet is empty
- * CRITICAL: Headers must match the actual data structure used in logOrderToGoogleSheets (6 columns: A-F)
+ * CRITICAL: Headers must match the actual data structure used in logOrderToGoogleSheets (7 columns: A-G)
  */
 async function initializeSheetHeaders() {
   if (!sheetsClient || !spreadsheetId) {
@@ -492,22 +479,23 @@ async function initializeSheetHeaders() {
   }
   
   try {
-    // Check if sheet has data - use the same range as order logging (A-F)
+    // Check if sheet has data - use the same range as order logging (A-G)
     const response = await sheetsClient.spreadsheets.values.get({
       spreadsheetId: spreadsheetId,
-      range: 'Sheet1!A1:F1', // Match the actual data structure (6 columns)
+      range: 'Sheet1!A1:G1', // Match the actual data structure (7 columns)
     });
     
     // If no headers exist, create them
     // CRITICAL: Headers must match the exact structure used in logOrderToGoogleSheets
     if (!response.data.values || response.data.values.length === 0) {
       const headers = [
-        'Name',              // Column A
-        'Phone Number',      // Column B
-        'Pick Up/Delivery',  // Column C
-        'Pick Up Time (EST)', // Column D
-        'Price',             // Column E
-        'Order Details',     // Column F
+        'Name',                    // Column A
+        'Phone Number',            // Column B
+        'Pick Up/Delivery',        // Column C (just "Pickup" or "Delivery")
+        'Delivery Address',        // Column D (address or "-")
+        'Estimated Pick Up Time (EST)', // Column E
+        'Price',                   // Column F
+        'Order Details',           // Column G
       ];
       
       await sheetsClient.spreadsheets.values.update({
