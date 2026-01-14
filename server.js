@@ -1571,6 +1571,16 @@ wss.on('connection', (ws, req) => {
         case 'stop':
           console.log('Stream stopped:', streamSid);
           
+          // #region agent log
+          // DEBUG: Log order state at stream stop
+          console.log('🔍🔍🔍 DEBUG STREAM STOP - ORDER STATE:');
+          console.log('🔍 order exists:', !!order);
+          console.log('🔍 order.address:', order?.address || 'NULL/UNDEFINED');
+          console.log('🔍 order.addressConfirmed:', order?.addressConfirmed || false);
+          console.log('🔍 order.deliveryMethod:', order?.deliveryMethod || 'NULL/UNDEFINED');
+          fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:stream_stop',message:'STREAM_STOP_ORDER_STATE',data:{orderExists:!!order,address:order?.address||'NULL',addressConfirmed:order?.addressConfirmed||false,deliveryMethod:order?.deliveryMethod||'NULL',itemCount:order?.items?.length||0},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H3_stream_stop'})}).catch(()=>{});
+          // #endregion
+          
           // CRITICAL: Only log orders that are COMPLETE and CONFIRMED
           // DO NOT log incomplete orders - this causes "mystery rows" and wrong data
           if (order && order.items.length > 0 && !order.logged && order.confirmed) {
@@ -3160,6 +3170,11 @@ wss.on('connection', (ws, req) => {
                       console.log('✅ Set address:', addressValue);
                       activeOrders.set(streamSid, currentOrder);
                       
+                      // #region agent log
+                      // DEBUG: Log address being saved
+                      fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:set_address_saved',message:'ADDRESS_SAVED',data:{addressValue:addressValue,orderAddress:currentOrder.address,streamSid:streamSid},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H2_address_saved'})}).catch(()=>{});
+                      // #endregion
+                      
                       // CRITICAL: Immediately trigger address confirmation response
                       // This ensures the AI confirms the address back to the customer
                       setTimeout(() => {
@@ -3404,6 +3419,15 @@ wss.on('connection', (ws, req) => {
                   case 'confirm_order':
                     currentOrder.confirmed = true;
                     console.log('✅ Order confirmed via tool call');
+                    
+                    // #region agent log
+                    // DEBUG: Log order state at confirmation
+                    console.log('🔍🔍🔍 DEBUG CONFIRM_ORDER - ADDRESS STATUS:');
+                    console.log('🔍 currentOrder.address:', currentOrder.address || 'NULL/UNDEFINED');
+                    console.log('🔍 currentOrder.addressConfirmed:', currentOrder.addressConfirmed || false);
+                    fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:confirm_order',message:'CONFIRM_ORDER_ADDRESS',data:{address:currentOrder.address||'NULL',addressConfirmed:currentOrder.addressConfirmed||false,deliveryMethod:currentOrder.deliveryMethod||'NULL'},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H4_confirm_order'})}).catch(()=>{});
+                    // #endregion
+                    
                     activeOrders.set(streamSid, currentOrder);
                     
                     // CRITICAL: Log order immediately when confirmed (get fresh order state first)
@@ -4219,6 +4243,15 @@ wss.on('connection', (ws, req) => {
   // Send order to all configured integrations
   async function logOrder(order, storeConfig = {}) {
     console.log('📝 Logging order to all configured services...');
+    
+    // #region agent log
+    // DEBUG: Log order address status at entry to logOrder
+    console.log('🔍🔍🔍 DEBUG logOrder ENTRY - ADDRESS STATUS:');
+    console.log('🔍 order.address:', order.address || 'NULL/UNDEFINED');
+    console.log('🔍 order.addressConfirmed:', order.addressConfirmed || false);
+    console.log('🔍 order.deliveryMethod:', order.deliveryMethod || 'NULL/UNDEFINED');
+    fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:logOrder_entry',message:'LOG_ORDER_ADDRESS_CHECK',data:{address:order.address||'NULL',addressConfirmed:order.addressConfirmed||false,deliveryMethod:order.deliveryMethod||'NULL'},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H1_logOrder_entry'})}).catch(()=>{});
+    // #endregion
     
     // CRITICAL: Validate order before logging
     if (!order || !order.items || order.items.length === 0) {
