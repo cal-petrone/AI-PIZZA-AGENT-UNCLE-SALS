@@ -315,15 +315,17 @@ function createConversationSummary(order) {
   
   // Determine what to ask next (helps AI focus)
   // CRITICAL: Make this very explicit so AI doesn't skip steps
-  // CRITICAL: Show total BEFORE asking pickup/delivery
+  // CRITICAL: Show total ONCE before asking pickup/delivery
   let nextStep = '';
   if (order.items?.length === 0) {
-    nextStep = 'CRITICAL: Need items - ask what they want';
+    nextStep = 'CRITICAL: Customer mentioned items but order is empty - you MUST call add_item_to_order tool NOW. Do NOT just talk about items - CALL THE TOOL.';
   } else if (!order.deliveryMethod && order.items?.length > 0) {
-    // CRITICAL: Show total FIRST, then ask pickup/delivery
-    nextStep = 'CRITICAL: Show exact total FIRST, then ask pickup/delivery';
+    // CRITICAL: Show total ONCE, then ask pickup/delivery (only if total hasn't been shown yet)
+    nextStep = 'CRITICAL: Show exact total ONCE (format: "Your total is $X.XX"), then ask "Pickup or delivery?" - do NOT repeat the total.';
   } else if (order.deliveryMethod === 'delivery' && !order.address) {
     nextStep = 'CRITICAL: Need address - ask NOW';
+  } else if (order.deliveryMethod === 'delivery' && order.address && !order.addressConfirmed) {
+    nextStep = 'CRITICAL: Address provided - you MUST confirm it back to customer (e.g., "Perfect, [address]. Got it!")';
   } else if (!order.customerName) {
     nextStep = 'CRITICAL: Need name - ask NOW';
   } else if (!order.confirmed) {
@@ -345,14 +347,15 @@ function getCoreRulesPrompt() {
 
 RULES:
 1. Greet: "Thanks for calling Uncle Sal's. What can I get you?"
-2. MANDATORY TOOL USAGE: When customer orders ANY item (e.g., "pizza", "fries", "soda"), you MUST call add_item_to_order tool IMMEDIATELY. DO NOT just say "I'll add that" - you MUST call the tool. Example: Customer says "large pepperoni pizza" → Call add_item_to_order(name="pepperoni pizza", size="large") BEFORE saying anything else.
+2. MANDATORY TOOL USAGE: When customer orders ANY item, you MUST call add_item_to_order tool IMMEDIATELY. DO NOT generate text about items - CALL THE TOOL FIRST. If customer says "pizza", call add_item_to_order(name="pepperoni pizza") or match to menu. If ORDER summary says "CRITICAL: Customer mentioned items but order is empty", you MUST call add_item_to_order NOW.
 3. Wings: ask flavor first, then call add_item_to_order.
-4. Done phrases ("that's it","all set"): FIRST show exact total from ORDER summary, THEN ask "Pickup or delivery?"
+4. Done phrases ("that's it","all set"): Show exact total ONCE (format: "Your total is $X.XX"), then ask "Pickup or delivery?" - do NOT repeat total.
 5. Collect name, address (if delivery). Phone number is already captured - DO NOT ask for it.
-6. PRICING: Use the EXACT total shown in ORDER summary (format: "Total: $X.XX"). NEVER estimate or say "about" or "XX.XX". Say the exact amount.
-7. ORDER COMPLETION CHECK: Before saying goodbye, check ORDER summary. If it says "CRITICAL: Need" anything, ask for that FIRST. Do NOT say goodbye until order is complete.
-8. On confirm: call confirm_order, say "Awesome, thanks for ordering with Uncle Sal's today!"
-9. GOODBYE: Only say "Thanks for calling! Have a great day!" AFTER confirm_order is called. If customer says "bye" but order shows "CRITICAL: Need", ask for missing info instead of goodbye.
+6. PRICING: Use the EXACT total from ORDER summary (format: "Total: $X.XX"). NEVER say "about" or "XX.XX". Say exact amount ONCE before pickup/delivery question.
+7. ADDRESS CONFIRMATION: After customer provides delivery address, you MUST confirm it back (e.g., "Perfect, [address]. Got it!").
+8. ORDER COMPLETION CHECK: Before saying goodbye, check ORDER summary. If it says "CRITICAL: Need" anything, ask for that FIRST. Do NOT say goodbye until order is complete.
+9. On confirm: call confirm_order, say "Awesome, thanks for ordering with Uncle Sal's today!"
+10. GOODBYE: Only say "Thanks for calling! Have a great day!" AFTER confirm_order is called. If customer says "bye" but order shows "CRITICAL: Need", ask for missing info instead of goodbye.
 
 CONFIRM PHRASES: "Got it.", "Perfect.", "Sure thing."
 NEVER go silent. Always confirm immediately. Complete the order before saying goodbye.`;
@@ -1466,6 +1469,7 @@ wss.on('connection', (ws, req) => {
             items: [],
             deliveryMethod: null,
             address: null,
+            addressConfirmed: false, // Track if address was confirmed back to customer
             customerName: null,
             customerPhone: callerPhone || null, // Use actual caller phone number
             paymentMethod: null,
@@ -3067,6 +3071,7 @@ wss.on('connection', (ws, req) => {
                       }
                       
                       currentOrder.address = addressValue;
+                      currentOrder.addressConfirmed = false; // Track if address was confirmed back to customer
                       
                       // CRITICAL: Ensure delivery method is set to 'delivery' if address is being set
                       // This prevents corrupted data where address exists but deliveryMethod is wrong
@@ -3077,6 +3082,33 @@ wss.on('connection', (ws, req) => {
                       
                       console.log('✅ Set address:', addressValue);
                       activeOrders.set(streamSid, currentOrder);
+                      
+                      // CRITICAL: Immediately trigger address confirmation response
+                      // This ensures the AI confirms the address back to the customer
+                      setTimeout(() => {
+                        if (!userIsSpeaking && !responseInProgress && openaiClient && openaiClient.readyState === WebSocket.OPEN && streamSid === sid) {
+                          console.log('✓ Address set - ensuring AI confirms it back to customer');
+                          try {
+                            responseInProgress = true;
+                            const addressConfirmPayload = {
+                              type: 'response.create',
+                              response: {
+                                modalities: ['audio', 'text']
+                              }
+                            };
+                            
+                            if (!safeSendToOpenAI(addressConfirmPayload, 'response.create (address confirmation)')) {
+                              responseInProgress = false;
+                              console.error('❌ Failed to create address confirmation response');
+                            } else {
+                              console.log('✓ Address confirmation response sent');
+                            }
+                          } catch (error) {
+                            console.error('Error creating address confirmation response:', error);
+                            responseInProgress = false;
+                          }
+                        }
+                      }, 200);
                       
                       // Verify address and delivery method were saved correctly
                       const verifyOrder = activeOrders.get(streamSid);
