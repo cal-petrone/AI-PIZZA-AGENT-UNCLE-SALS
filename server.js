@@ -1580,7 +1580,8 @@ wss.on('connection', (ws, req) => {
             // CRITICAL: Validate ALL required fields before logging
             const hasName = !!order.customerName && order.customerName.trim().length > 0;
             const hasDeliveryMethod = !!order.deliveryMethod;
-            const hasAddress = order.deliveryMethod !== 'delivery' || (!!order.address && order.address.trim().length > 0);
+            // CRITICAL: For delivery, address must exist AND be confirmed back to customer
+            const hasAddress = order.deliveryMethod !== 'delivery' || (!!order.address && order.address.trim().length > 0 && order.addressConfirmed === true);
             const validItems = order.items.filter(item => item.name && item.name.length > 0 && (item.price || 0) > 0);
             const hasValidItems = validItems.length > 0;
             
@@ -1588,6 +1589,7 @@ wss.on('connection', (ws, req) => {
               hasName,
               hasDeliveryMethod,
               hasAddress,
+              addressConfirmed: order.addressConfirmed || false,
               hasValidItems,
               customerName: order.customerName || 'MISSING',
               deliveryMethod: order.deliveryMethod || 'MISSING',
@@ -1632,7 +1634,8 @@ wss.on('connection', (ws, req) => {
             
             const hasName = !!order.customerName && order.customerName.trim().length > 0;
             const hasDeliveryMethod = !!order.deliveryMethod;
-            const hasAddress = order.deliveryMethod !== 'delivery' || (!!order.address && order.address.trim().length > 0);
+            // CRITICAL: For delivery, address must exist AND be confirmed back to customer
+            const hasAddress = order.deliveryMethod !== 'delivery' || (!!order.address && order.address.trim().length > 0 && order.addressConfirmed === true);
             const validItems = order.items.filter(item => item.name && item.name.length > 0 && (item.price || 0) > 0);
             const hasValidItems = validItems.length > 0;
             
@@ -1640,6 +1643,7 @@ wss.on('connection', (ws, req) => {
               hasName,
               hasDeliveryMethod,
               hasAddress,
+              addressConfirmed: order.addressConfirmed || false,
               hasValidItems,
               customerName: order.customerName || 'MISSING',
               deliveryMethod: order.deliveryMethod || 'MISSING',
@@ -3425,14 +3429,15 @@ wss.on('connection', (ws, req) => {
                         // CRITICAL: Validate ALL required fields before logging
                         const hasName = !!confirmedOrder.customerName && confirmedOrder.customerName.trim().length > 0;
                         const hasDeliveryMethod = !!confirmedOrder.deliveryMethod;
-                        const hasAddress = confirmedOrder.deliveryMethod !== 'delivery' || (!!confirmedOrder.address && confirmedOrder.address.trim().length > 0);
+                        // CRITICAL: For delivery, address must exist AND be confirmed back to customer
+                        const hasAddress = confirmedOrder.deliveryMethod !== 'delivery' || (!!confirmedOrder.address && confirmedOrder.address.trim().length > 0 && confirmedOrder.addressConfirmed === true);
                         const hasValidItems = validItems.length > 0;
                         const allItemsHavePrices = validItems.every(item => (item.price || 0) > 0);
                         
                         console.log('🔍🔍🔍 VALIDATION CHECK BEFORE LOGGING:');
                         console.log('🔍 Has name:', hasName, '| Name:', confirmedOrder.customerName || 'MISSING');
                         console.log('🔍 Has delivery method:', hasDeliveryMethod, '| Method:', confirmedOrder.deliveryMethod || 'MISSING');
-                        console.log('🔍 Has address (if needed):', hasAddress, '| Address:', confirmedOrder.address || 'MISSING');
+                        console.log('🔍 Has address (if needed):', hasAddress, '| Address:', confirmedOrder.address || 'MISSING', '| Confirmed:', confirmedOrder.addressConfirmed || false);
                         console.log('🔍 Has valid items:', hasValidItems, '| Items count:', validItems.length);
                         console.log('🔍 All items have prices:', allItemsHavePrices);
                         
