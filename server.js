@@ -2804,6 +2804,66 @@ wss.on('connection', (ws, req) => {
                     }
                   }
                 }
+                
+                // CRITICAL: Extract delivery method - AI often fails to call set_delivery_method tool
+                // Server-side extraction as backup to ensure delivery method is captured
+                if (!currentOrder.deliveryMethod) {
+                  const transcriptLower = data.transcript.toLowerCase().trim();
+                  
+                  // Check for clear delivery/pickup indicators
+                  if (transcriptLower === 'delivery' || 
+                      transcriptLower === 'for delivery' || 
+                      transcriptLower.includes('delivery please') ||
+                      transcriptLower.includes("i'll do delivery") ||
+                      transcriptLower.includes("i want delivery") ||
+                      transcriptLower.includes("make it delivery") ||
+                      (transcriptLower.includes('deliver') && !transcriptLower.includes('pickup'))) {
+                    currentOrder.deliveryMethod = 'delivery';
+                    console.log('✓ SERVER-SIDE: Extracted delivery method: delivery');
+                    activeOrders.set(streamSid, currentOrder);
+                  } else if (transcriptLower === 'pickup' || 
+                             transcriptLower === 'pick up' ||
+                             transcriptLower === 'for pickup' ||
+                             transcriptLower.includes('pickup please') ||
+                             transcriptLower.includes("i'll do pickup") ||
+                             transcriptLower.includes("i'll pick it up") ||
+                             transcriptLower.includes("i want pickup")) {
+                    currentOrder.deliveryMethod = 'pickup';
+                    console.log('✓ SERVER-SIDE: Extracted delivery method: pickup');
+                    activeOrders.set(streamSid, currentOrder);
+                  }
+                }
+                
+                // CRITICAL: Extract delivery address - AI often fails to call set_address tool
+                // Server-side extraction as backup to ensure address is captured
+                if (currentOrder.deliveryMethod === 'delivery' && !currentOrder.address) {
+                  // Look for address patterns - street number + street name
+                  const addressPatterns = [
+                    // "123 Main Street" or "123 Main St"
+                    /(\d+\s+[A-Za-z]+(?:\s+[A-Za-z]+)*\s*(?:Street|St|Avenue|Ave|Road|Rd|Drive|Dr|Lane|Ln|Boulevard|Blvd|Court|Ct|Place|Pl|Way|Circle|Cir)\.?)/i,
+                    // "123 Main" (short form)
+                    /(\d+\s+[A-Za-z]+(?:\s+[A-Za-z]+)?)/i
+                  ];
+                  
+                  for (const pattern of addressPatterns) {
+                    const match = data.transcript.match(pattern);
+                    if (match && match[1]) {
+                      const potentialAddress = match[1].trim();
+                      // Validate it looks like an address (has number and letters, reasonable length)
+                      if (potentialAddress.length >= 5 && potentialAddress.length <= 100 && /^\d+\s+[A-Za-z]/.test(potentialAddress)) {
+                        currentOrder.address = potentialAddress;
+                        currentOrder.addressConfirmed = false; // Will be set to true when AI confirms
+                        console.log('✓ SERVER-SIDE: Extracted address:', potentialAddress);
+                        activeOrders.set(streamSid, currentOrder);
+                        
+                        // #region agent log
+                        fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:address_extracted',message:'SERVER_SIDE_ADDRESS_EXTRACTED',data:{address:potentialAddress,transcript:data.transcript},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H5_server_extract'})}).catch(()=>{});
+                        // #endregion
+                        break;
+                      }
+                    }
+                  }
+                }
               }
             }
             break;
@@ -3628,17 +3688,29 @@ wss.on('connection', (ws, req) => {
               }
               
               // Check if address was confirmed back to customer
+              // CRITICAL: Be generous with confirmation detection - if AI mentions the address OR uses confirmation phrases
               if (orderForCheck && orderForCheck.address && !orderForCheck.addressConfirmed) {
-                const addressConfirmPhrases = ['perfect', 'got it', 'sounds good', 'okay', 'alright', 'confirmed', 'correct'];
-                const addressInTranscript = orderForCheck.address.toLowerCase().split(' ').slice(0, 3).some(word => 
-                  word.length > 3 && transcript.includes(word)
-                );
-                const confirmedAddress = addressConfirmPhrases.some(phrase => transcript.includes(phrase));
+                const addressConfirmPhrases = ['perfect', 'got it', 'sounds good', 'okay', 'alright', 'confirmed', 'correct', 'great', 'awesome', 'delivering to', 'delivery to'];
                 
-                if (confirmedAddress || addressInTranscript) {
+                // Check if AI repeated any significant part of the address (street number or street name)
+                const addressParts = orderForCheck.address.toLowerCase().split(/\s+/);
+                const addressInTranscript = addressParts.some(word => 
+                  word.length >= 3 && transcript.includes(word)
+                );
+                
+                // Check for confirmation phrases
+                const hasConfirmPhrase = addressConfirmPhrases.some(phrase => transcript.includes(phrase));
+                
+                // Confirm if AI either repeated address OR used a confirmation phrase
+                // (We're being generous here because the AI often confirms naturally)
+                if (hasConfirmPhrase || addressInTranscript) {
                   orderForCheck.addressConfirmed = true;
                   activeOrders.set(streamSid, orderForCheck);
-                  console.log('✅ Address confirmed back to customer');
+                  console.log('✅ Address confirmed back to customer - hasConfirmPhrase:', hasConfirmPhrase, 'addressInTranscript:', addressInTranscript);
+                  
+                  // #region agent log
+                  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:address_confirmed',message:'ADDRESS_CONFIRMED',data:{address:orderForCheck.address,aiSaid:transcript,hasConfirmPhrase:hasConfirmPhrase,addressInTranscript:addressInTranscript},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H6_address_confirmed'})}).catch(()=>{});
+                  // #endregion
                 }
               }
               
