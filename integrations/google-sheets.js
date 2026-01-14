@@ -140,6 +140,24 @@ async function initializeGoogleSheets() {
 }
 
 /**
+ * Format phone number as 315-876-3210
+ * @param {string} phone - Phone number (digits only or with formatting)
+ * @returns {string} Formatted phone number (315-876-3210) or 'not provided'
+ */
+function formatPhoneNumber(phone) {
+  if (!phone) return 'not provided';
+  
+  // Extract only digits
+  const digits = String(phone).replace(/\D/g, '');
+  
+  // Must be 10 digits
+  if (digits.length !== 10) return 'not provided';
+  
+  // Format as 315-876-3210
+  return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+}
+
+/**
  * Log order to Google Sheets
  * @param {Object} order - Order object with items, totals, etc.
  * @param {Object} storeConfig - Store configuration (name, location, etc.)
@@ -156,9 +174,6 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
   
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'google-sheets.js:159',message:'Price calculation START',data:{itemsCount:order.items?.length || 0,items:order.items?.map(i=>({name:i.name,price:i.price,quantity:i.quantity})) || [],customerPhone:order.customerPhone},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C,D'})}).catch(()=>{});
-      // #endregion
       // CRITICAL: Calculate totals - MUST include all items PLUS 8% NYS tax
       let subtotal = 0;
       if (!order.items || order.items.length === 0) {
@@ -179,9 +194,6 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
       const tax = subtotal * taxRate;
       const total = subtotal + tax; // CRITICAL: Total = Subtotal + Tax (8%)
       
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'google-sheets.js:177',message:'Price calculation RESULT',data:{subtotal:subtotal,tax:tax,taxRate:taxRate,total:total,itemsCount:order.items.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-      // #endregion
       console.log(`📊 Price calculation: Subtotal: $${subtotal.toFixed(2)} + Tax (${(taxRate * 100).toFixed(0)}%): $${tax.toFixed(2)} = Total: $${total.toFixed(2)}`);
       
       // Format items as string
@@ -199,12 +211,9 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
       // Column E: Price
       // Column F: Order Details
       
-    // CRITICAL: Use customerPhone if available, otherwise fallback to 'not provided'
+    // CRITICAL: Use customerPhone if available, format as 315-876-3210
     // Do NOT use order.from as it contains callSid, not phone number
-    const phoneNumber = order.customerPhone || 'not provided';
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'google-sheets.js:198',message:'Phone number extraction',data:{customerPhone:order.customerPhone,orderFrom:order.from,phoneNumber:phoneNumber},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-    // #endregion
+    const phoneNumber = formatPhoneNumber(order.customerPhone);
     
     // CRITICAL: Format Column C - ALWAYS include address if delivery is selected
     // CRITICAL: Validate deliveryMethod BEFORE using it - prevent mystery rows
@@ -312,9 +321,8 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
       ? order.customerName.trim() 
       : 'not provided'; // Column A: Name (must be valid string, not just numbers)
     
-    const validatedPhone = (phoneNumber && typeof phoneNumber === 'string' && /^\d{10}$/.test(phoneNumber.replace(/\D/g, ''))) 
-      ? phoneNumber.replace(/\D/g, '').slice(-10) 
-      : 'not provided'; // Column B: Phone (must be 10 digits)
+    // Column B: Phone - already formatted as 315-876-3210 by formatPhoneNumber()
+    const validatedPhone = phoneNumber || 'not provided';
     
     // CRITICAL: Ensure deliveryDisplay is properly formatted and never contains just numbers
     // This prevents the "46031" mystery row issue where a ZIP code or number gets into the delivery column
@@ -535,5 +543,6 @@ module.exports = {
   initializeGoogleSheets,
   logOrderToGoogleSheets,
   initializeSheetHeaders,
+  formatPhoneNumber,
 };
 
