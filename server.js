@@ -299,6 +299,9 @@ function createConversationSummary(order) {
   
   // Calculate exact total
   const totals = calculateOrderTotal(order);
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:301',message:'Building order summary',data:{itemsCount:order.items?.length||0,items:items,subtotal:totals.subtotal,tax:totals.tax,total:totals.total},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+  // #endregion
   
   // Ultra-compact format to save tokens
   const parts = [];
@@ -312,17 +315,19 @@ function createConversationSummary(order) {
   
   // Determine what to ask next (helps AI focus)
   // CRITICAL: Make this very explicit so AI doesn't skip steps
+  // CRITICAL: Show total BEFORE asking pickup/delivery
   let nextStep = '';
   if (order.items?.length === 0) {
     nextStep = 'CRITICAL: Need items - ask what they want';
-  } else if (!order.deliveryMethod) {
-    nextStep = 'CRITICAL: Need pickup/delivery - ask NOW before goodbye';
+  } else if (!order.deliveryMethod && order.items?.length > 0) {
+    // CRITICAL: Show total FIRST, then ask pickup/delivery
+    nextStep = 'CRITICAL: Show exact total FIRST, then ask pickup/delivery';
   } else if (order.deliveryMethod === 'delivery' && !order.address) {
     nextStep = 'CRITICAL: Need address - ask NOW';
   } else if (!order.customerName) {
     nextStep = 'CRITICAL: Need name - ask NOW';
   } else if (!order.confirmed) {
-    nextStep = 'Ready: give exact total, then call confirm_order';
+    nextStep = 'Ready: call confirm_order';
   } else {
     nextStep = 'Order complete - can say goodbye';
   }
@@ -342,9 +347,9 @@ RULES:
 1. Greet: "Thanks for calling Uncle Sal's. What can I get you?"
 2. CRITICAL: When customer orders ANY item, you MUST call add_item_to_order tool FIRST, then confirm.
 3. Wings: ask flavor first, then call add_item_to_order.
-4. Done phrases ("that's it","all set"): ask "Pickup or delivery?"
-5. Collect name, address (if delivery).
-6. PRICING: Use the EXACT total shown in ORDER summary (format: "Total: $X.XX"). NEVER estimate or say "about". Say the exact amount.
+4. Done phrases ("that's it","all set"): FIRST show exact total from ORDER summary, THEN ask "Pickup or delivery?"
+5. Collect name, address (if delivery). Phone number is already captured - DO NOT ask for it.
+6. PRICING: Use the EXACT total shown in ORDER summary (format: "Total: $X.XX"). NEVER estimate or say "about" or "XX.XX". Say the exact amount.
 7. ORDER COMPLETION CHECK: Before saying goodbye, check ORDER summary. If it says "CRITICAL: Need" anything, ask for that FIRST. Do NOT say goodbye until order is complete.
 8. On confirm: call confirm_order, say "Awesome, thanks for ordering with Uncle Sal's today!"
 9. GOODBYE: Only say "Thanks for calling! Have a great day!" AFTER confirm_order is called. If customer says "bye" but order shows "CRITICAL: Need", ask for missing info instead of goodbye.
@@ -1470,6 +1475,9 @@ wss.on('connection', (ws, req) => {
             from: callSid // Keep callSid for reference, but use customerPhone for logging
           };
           activeOrders.set(streamSid, order);
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:1472',message:'Order initialized',data:{streamSid:streamSid,customerPhone:callerPhone,itemsCount:0},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
+          // #endregion
           
           console.log('✓ State reset complete - connecting to OpenAI for new call');
           
@@ -2209,6 +2217,9 @@ wss.on('connection', (ws, req) => {
                 console.log('🔧 Function call arguments:', functionArgs);
                 
                 if (functionName === 'add_item_to_order' && functionArgs) {
+                  // #region agent log
+                  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2211',message:'add_item_to_order tool called',data:{functionName:functionName,functionArgs:functionArgs,streamSid:streamSid},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+                  // #endregion
                   // Parse arguments - they come as a string
                   let toolInput;
                   try {
@@ -2244,6 +2255,9 @@ wss.on('connection', (ws, req) => {
                     
                     const { name, size, quantity = 1 } = toolInput;
                     console.log(`🔧 Processing add_item_to_order from output_item.done: name=${name}, size=${size}, quantity=${quantity}`);
+                    // #region agent log
+                    fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2246',message:'Parsing tool input',data:{name:name,size:size,quantity:quantity,orderItemsBefore:currentOrder.items.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+                    // #endregion
                     
                     // Menu is already available from connectToOpenAI scope
                     if (!menu || typeof menu !== 'object') {
@@ -2256,12 +2270,18 @@ wss.on('connection', (ws, req) => {
                     
                     // Try to find item in menu - CRITICAL: Only add items that exist in menu
                     let foundInMenu = false;
+                    // #region agent log
+                    fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2258',message:'Searching menu for item',data:{searchName:name,menuItems:Object.keys(menu).slice(0,10)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                    // #endregion
                     try {
                       for (const menuItem in menu) {
                         if (menuItem.toLowerCase() === name.toLowerCase()) {
                           itemName = menuItem;
                           foundInMenu = true;
                           const menuItemData = menu[menuItem];
+                          // #region agent log
+                          fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2261',message:'Item found in menu',data:{searchName:name,matchedItem:menuItem,size:size,hasPriceMap:!!menuItemData.priceMap,hasPrice:!!menuItemData.price},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                          // #endregion
                           
                           // Try to get price from priceMap first (for items with sizes)
                           if (size && menuItemData && menuItemData.priceMap && menuItemData.priceMap[size]) {
@@ -2298,6 +2318,9 @@ wss.on('connection', (ws, req) => {
                     // CRITICAL: Only add items that are in the menu - prevent adding names or invalid items
                     if (!foundInMenu) {
                       console.warn(`⚠️  Item "${name}" not found in menu - skipping. This might be a name or invalid item.`);
+                      // #region agent log
+                      fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2299',message:'Item NOT found in menu',data:{searchName:name,menuItems:Object.keys(menu)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                      // #endregion
                       try {
                         console.warn(`⚠️  Available menu items: ${Object.keys(menu).join(', ')}`);
                       } catch (e) {
@@ -2341,13 +2364,22 @@ wss.on('connection', (ws, req) => {
                       // CRITICAL: Update order in map immediately
                       activeOrders.set(streamSid, currentOrder);
                       console.log(`📊 Order now has ${currentOrder.items.length} item(s):`, currentOrder.items.map(i => `${i.quantity}x ${i.name}`).join(', '));
+                      // #region agent log
+                      fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2342',message:'Item added to order',data:{streamSid:streamSid,itemsCount:currentOrder.items.length,items:currentOrder.items.map(i=>({name:i.name,quantity:i.quantity,price:i.price}))},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+                      // #endregion
                       
                       // Verify the order was saved correctly
                       const verifyOrder = activeOrders.get(streamSid);
                       if (verifyOrder && verifyOrder.items && verifyOrder.items.length !== currentOrder.items.length) {
                         console.error('❌ CRITICAL: Order not saved correctly! Expected', currentOrder.items.length, 'items but got', verifyOrder.items.length);
+                        // #region agent log
+                        fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2347',message:'Order NOT saved correctly',data:{expected:currentOrder.items.length,actual:verifyOrder.items.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+                        // #endregion
                       } else {
                         console.log('✅ Order saved correctly - verified', verifyOrder?.items?.length || 0, 'items in map');
+                        // #region agent log
+                        fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2350',message:'Order saved correctly',data:{itemsCount:verifyOrder.items.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+                        // #endregion
                       }
                     } catch (e) {
                       console.error('❌ Error adding item to order:', e);
