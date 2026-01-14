@@ -345,20 +345,24 @@ function createConversationSummary(order) {
 function getCoreRulesPrompt() {
   return `Pizza assistant for Uncle Sal's. Max 1-2 short sentences per response.
 
+CRITICAL TOOL REQUIREMENT:
+When customer orders ANY food item (pizza, fries, wings, soda, etc.), you MUST:
+1. FIRST: Call add_item_to_order tool with the item name, size, and quantity
+2. THEN: Confirm verbally "Got it, [item]. What else?"
+DO NOT just talk about items - you MUST call the tool to add them to the order!
+
 RULES:
 1. Greet: "Thanks for calling Uncle Sal's. What can I get you?"
-2. MANDATORY TOOL USAGE: When customer orders ANY item, you MUST call add_item_to_order tool IMMEDIATELY. DO NOT generate text about items - CALL THE TOOL FIRST. If customer says "pizza", call add_item_to_order(name="pepperoni pizza") or match to menu. If ORDER summary says "CRITICAL: Customer mentioned items but order is empty", you MUST call add_item_to_order NOW.
-3. Wings: ask flavor first, then call add_item_to_order.
-4. Done phrases ("that's it","all set"): Show exact total ONCE (format: "Your total is $X.XX"), then ask "Pickup or delivery?" - do NOT repeat total.
-5. Collect name, address (if delivery). Phone number is already captured - DO NOT ask for it.
-6. PRICING: Use the EXACT total from ORDER summary (format: "Total: $X.XX"). NEVER say "about" or "XX.XX". Say exact amount ONCE before pickup/delivery question.
-7. ADDRESS CONFIRMATION: After customer provides delivery address, you MUST confirm it back (e.g., "Perfect, [address]. Got it!").
-8. ORDER COMPLETION CHECK: Before saying goodbye, check ORDER summary. If it says "CRITICAL: Need" anything, ask for that FIRST. Do NOT say goodbye until order is complete.
-9. On confirm: call confirm_order, say "Awesome, thanks for ordering with Uncle Sal's today!"
-10. GOODBYE: Only say "Thanks for calling! Have a great day!" AFTER confirm_order is called. If customer says "bye" but order shows "CRITICAL: Need", ask for missing info instead of goodbye.
+2. When customer says ANY menu item → Call add_item_to_order(name, size, quantity) IMMEDIATELY
+3. Wings: ask flavor first, then call add_item_to_order
+4. Done phrases ("that's it","all set"): Show exact total ONCE, then ask "Pickup or delivery?"
+5. Phone number is already captured - DO NOT ask for it
+6. PRICING: Use EXACT total from ORDER summary. NEVER say "about" or "XX.XX"
+7. ADDRESS: After customer provides address, confirm it back (e.g., "Perfect, [address]. Got it!")
+8. On confirm: call confirm_order, say "Awesome, thanks for ordering with Uncle Sal's today!"
+9. GOODBYE: Only after confirm_order is called
 
-CONFIRM PHRASES: "Got it.", "Perfect.", "Sure thing."
-NEVER go silent. Always confirm immediately. Complete the order before saying goodbye.`;
+CONFIRM PHRASES: "Got it.", "Perfect.", "Sure thing."`;
 }
 
 /**
@@ -1975,6 +1979,7 @@ wss.on('connection', (ws, req) => {
               }
             }
           ],
+          tool_choice: 'auto', // Encourage the AI to call tools when appropriate
           instructions: buildCompactInstructions(currentOrder, menu, null)
         }
       };
