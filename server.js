@@ -367,11 +367,14 @@ ORDER FLOW (follow this EXACT sequence):
 8. Call confirm_order → Say "Awesome, thanks for ordering with Uncle Sal's today!"
 
 WING ORDERING RULES (CRITICAL):
-- When ordering wings, ALWAYS ask for FLAVOR if not specified
-- Include the "flavor" parameter when calling add_item_to_order for wings
-- Example: add_item_to_order(name="regular wings", flavor="hot")
-- DO NOT add wings to order without a flavor - employees need to know what to make!
-- After wings flavor is given, confirm: "Got it, [quantity] [flavor] wings."
+- VALID PIECE COUNTS: 6, 10, 20, 30, or 50 ONLY - NO OTHER SIZES EXIST
+- If customer asks for invalid count (e.g., 12-piece), say: "We don't have 12-piece wings. We have 6, 10, 20, 30, or 50 pieces. Which would you like?"
+- ALWAYS ask for piece count: "How many pieces: 6, 10, 20, 30, or 50?"
+- ALWAYS ask for FLAVOR if not specified
+- Include "flavor" parameter when calling add_item_to_order for wings
+- Example: add_item_to_order(name="regular wings", size="10", flavor="hot")
+- DO NOT add wings without BOTH piece count AND flavor!
+- After both are given, confirm: "Got it, [count]-piece [flavor] wings."
 
 MULTI-ITEM ORDERS:
 - Customers can order as many items as they want - NO LIMIT
@@ -3299,16 +3302,160 @@ wss.on('connection', (ws, req) => {
               fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:user_transcript',message:'USER_SAID',data:{transcript:data.transcript,hasName:activeOrders.get(streamSid)?.customerName||'NOT_SET',hasAddress:activeOrders.get(streamSid)?.address||'NOT_SET',deliveryMethod:activeOrders.get(streamSid)?.deliveryMethod||'NOT_SET'},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A_user_input'})}).catch(()=>{});
               // #endregion
               
-              // CRITICAL: Detect "what is" questions and handle IMMEDIATELY
               const lowerTranscript = data.transcript.toLowerCase();
-              const isDescriptionQuestion = lowerTranscript.includes('what is') || 
+              
+              // ============================================================
+              // PRICE QUESTION HANDLER - Must come BEFORE description handler
+              // ============================================================
+              const isPriceQuestion = lowerTranscript.includes('how much') || 
+                                     lowerTranscript.includes('price') ||
+                                     lowerTranscript.includes('cost') ||
+                                     lowerTranscript.includes('what does') && lowerTranscript.includes('cost');
+              
+              if (isPriceQuestion) {
+                console.log('💰💰💰 PRICE QUESTION DETECTED - HANDLING IMMEDIATELY 💰💰💰');
+                console.log('💰 User asked:', data.transcript);
+                
+                // STEP 1: Cancel any auto-response
+                safeSendToOpenAI({
+                  type: 'response.cancel'
+                }, 'cancel auto-response for price lookup');
+                
+                // STEP 2: Determine if this is about wings or another menu item
+                const isWingsPriceQuestion = lowerTranscript.includes('wing');
+                let responseText = '';
+                let priceFound = false;
+                
+                if (isWingsPriceQuestion) {
+                  console.log('🍗 Wings price question detected');
+                  
+                  // Extract piece count from question (e.g., "10-piece", "10 piece", "10")
+                  const pieceCountMatch = lowerTranscript.match(/(\d+)\s*(?:-?\s*piece)?/);
+                  const requestedCount = pieceCountMatch ? parseInt(pieceCountMatch[1]) : null;
+                  
+                  // Get valid piece counts from wingOptions
+                  const validPieceCounts = menuCache?.wingOptions?.pieceCounts || [];
+                  const validCountNumbers = validPieceCounts.map(pc => {
+                    const match = pc.name.match(/(\d+)/);
+                    return match ? parseInt(match[1]) : null;
+                  }).filter(n => n !== null);
+                  
+                  console.log('🍗 Valid piece counts:', validCountNumbers.join(', '));
+                  console.log('🍗 Requested count:', requestedCount);
+                  
+                  if (requestedCount && validCountNumbers.includes(requestedCount)) {
+                    // Find the price for this piece count
+                    const matchingPieceCount = validPieceCounts.find(pc => pc.name.includes(String(requestedCount)));
+                    if (matchingPieceCount && matchingPieceCount.price > 0) {
+                      responseText = `${requestedCount}-piece wings are $${matchingPieceCount.price.toFixed(2)}.`;
+                      priceFound = true;
+                      console.log(`💰 Found wing price: ${requestedCount}-piece = $${matchingPieceCount.price}`);
+                    }
+                  } else if (requestedCount && !validCountNumbers.includes(requestedCount)) {
+                    // Invalid piece count - correct them
+                    const validOptions = validCountNumbers.length > 0 ? validCountNumbers.join(', ') : '6, 10, 20, 30, or 50';
+                    responseText = `We don't have ${requestedCount}-piece wings. We have ${validOptions} pieces. Which would you like?`;
+                    priceFound = true; // Mark as handled
+                    console.log(`🍗 Invalid piece count ${requestedCount} - correcting`);
+                  } else {
+                    // No piece count specified - ask for it
+                    const validOptions = validCountNumbers.length > 0 ? validCountNumbers.join(', ') : '6, 10, 20, 30, or 50';
+                    responseText = `Sure! We have wings in ${validOptions} pieces. Which size would you like to know the price for?`;
+                    priceFound = true; // Mark as handled
+                    console.log('🍗 No piece count specified - asking');
+                  }
+                  
+                  // #region agent log
+                  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:price_handler_wings',message:'WING_PRICE_LOOKUP',data:{intent:'price',requestedCount,validCounts:validCountNumbers,priceFound,responseText:responseText.substring(0,100),sheetUsed:'Wing_Options'},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'K_price'})}).catch(()=>{});
+                  // #endregion
+                } else {
+                  // Non-wings price question - look up in Menu_Items
+                  console.log('💰 Non-wings price question - looking up in menu');
+                  
+                  // Extract item name from question
+                  let itemQuery = lowerTranscript
+                    .replace(/how much (is|are|for|does)( the| a| an)?/gi, '')
+                    .replace(/what('s| is| are)( the)? price (of|for)?/gi, '')
+                    .replace(/price of( the| a| an)?/gi, '')
+                    .replace(/cost of( the| a| an)?/gi, '')
+                    .replace(/\?/g, '')
+                    .trim();
+                  
+                  console.log('💰 Extracted item query:', itemQuery);
+                  
+                  // Look up item in menu
+                  const lookupResult = lookupMenuItemDescription(menu, itemQuery);
+                  
+                  if (lookupResult.matched && lookupResult.itemName) {
+                    const itemData = menu[lookupResult.itemName];
+                    let price = null;
+                    
+                    // Get price from menu data
+                    if (itemData?.price && itemData.price > 0) {
+                      price = itemData.price;
+                    } else if (itemData?.priceMap) {
+                      // Get first available price from priceMap
+                      const firstSize = Object.keys(itemData.priceMap)[0];
+                      if (firstSize && itemData.priceMap[firstSize] > 0) {
+                        price = itemData.priceMap[firstSize];
+                        // If item has multiple sizes, mention that
+                        if (Object.keys(itemData.priceMap).length > 1) {
+                          const sizes = Object.keys(itemData.priceMap).join(', ');
+                          responseText = `The ${lookupResult.itemName} starts at $${price.toFixed(2)} for ${firstSize}. We have sizes: ${sizes}.`;
+                          priceFound = true;
+                        }
+                      }
+                    }
+                    
+                    if (price && !priceFound) {
+                      responseText = `The ${lookupResult.itemName} is $${price.toFixed(2)}.`;
+                      priceFound = true;
+                    } else if (!priceFound) {
+                      responseText = `I found the ${lookupResult.itemName} but I don't have a price listed. Would you like to know about something else?`;
+                      priceFound = true;
+                    }
+                    
+                    console.log(`💰 Found price for "${lookupResult.itemName}": $${price}`);
+                  } else if (lookupResult.alternatives.length > 0) {
+                    responseText = `I don't see that exact item. Did you mean the ${lookupResult.alternatives[0]}?`;
+                    priceFound = true;
+                  } else {
+                    responseText = `I don't see that item on our menu. What else can I help you with?`;
+                    priceFound = true;
+                  }
+                  
+                  // #region agent log
+                  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:price_handler_menu',message:'MENU_PRICE_LOOKUP',data:{intent:'price',itemQuery,matchedItem:lookupResult.itemName||'NONE',priceFound,responseText:responseText.substring(0,100),sheetUsed:'Menu_Items'},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'K_price'})}).catch(()=>{});
+                  // #endregion
+                }
+                
+                // STEP 3: Send the price response IMMEDIATELY
+                if (priceFound && responseText) {
+                  safeSendToOpenAI({
+                    type: 'response.create',
+                    response: {
+                      modalities: ['audio', 'text'],
+                      instructions: `YOU MUST SAY EXACTLY THIS AND NOTHING ELSE: "${responseText}"\n\nDo NOT say "let me check", "one moment", "referring to", or "on its way". Say the price IMMEDIATELY.`
+                    }
+                  }, 'immediate price response');
+                  
+                  console.log('💰 PRICE RESPONSE SENT IMMEDIATELY:', responseText);
+                  responseInProgress = true;
+                }
+              }
+              
+              // ============================================================
+              // DESCRIPTION QUESTION HANDLER (skip if already handled as price)
+              // ============================================================
+              const isDescriptionQuestion = !isPriceQuestion && (
+                                           lowerTranscript.includes('what is') || 
                                            lowerTranscript.includes('what\'s') || 
                                            lowerTranscript.includes('tell me about') || 
                                            lowerTranscript.includes('what does') ||
                                            lowerTranscript.includes('what comes on') ||
                                            lowerTranscript.includes('what\'s in') ||
                                            lowerTranscript.includes('what kind of') ||
-                                           lowerTranscript.includes('describe');
+                                           lowerTranscript.includes('describe'));
               
               if (isDescriptionQuestion) {
                 console.log('🔍🔍🔍 DESCRIPTION QUESTION DETECTED - TAKING CONTROL 🔍🔍🔍');
@@ -3645,12 +3792,74 @@ wss.on('connection', (ws, req) => {
                         break; // Don't add item without size
                       }
                       
-                      // CRITICAL: Check if item is wings and flavor is missing
+                      // CRITICAL: Check if item is wings
                       const itemNameLower = itemName.toLowerCase();
                       const categoryLower = (menuItemData?.category || '').toLowerCase();
                       const isWingsItem = categoryLower.includes('wing') || itemNameLower.includes('wing');
                       const { flavor, modifiers } = toolInput;
                       
+                      // ============================================================
+                      // WING PIECE COUNT VALIDATION - Only allow valid counts
+                      // ============================================================
+                      if (isWingsItem) {
+                        // Get valid piece counts from Wing_Options sheet
+                        const validPieceCounts = menuCache?.wingOptions?.pieceCounts || [];
+                        const validCountNumbers = validPieceCounts.map(pc => {
+                          const match = pc.name.match(/(\d+)/);
+                          return match ? parseInt(match[1]) : null;
+                        }).filter(n => n !== null);
+                        
+                        // Default valid counts if Wing_Options not loaded
+                        const allowedCounts = validCountNumbers.length > 0 ? validCountNumbers : [6, 10, 20, 30, 50];
+                        
+                        // Extract piece count from size parameter or quantity
+                        let requestedPieceCount = null;
+                        
+                        // Check size parameter for piece count (e.g., "12-piece", "12 piece", "12")
+                        if (size) {
+                          const sizeMatch = String(size).match(/(\d+)/);
+                          if (sizeMatch) {
+                            requestedPieceCount = parseInt(sizeMatch[1]);
+                          }
+                        }
+                        
+                        // Also check if quantity looks like a piece count (>5)
+                        if (!requestedPieceCount && quantity > 5) {
+                          requestedPieceCount = quantity;
+                        }
+                        
+                        console.log(`🍗 Wing order validation: requested=${requestedPieceCount}, allowed=${allowedCounts.join(',')}`);
+                        
+                        // Validate piece count
+                        if (requestedPieceCount && !allowedCounts.includes(requestedPieceCount)) {
+                          console.log(`🍗❌ INVALID PIECE COUNT: ${requestedPieceCount} - REJECTING ORDER`);
+                          
+                          const validOptions = allowedCounts.join(', ');
+                          
+                          // #region agent log
+                          fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:wing_piece_validation',message:'INVALID_WING_PIECE_COUNT',data:{requestedPieceCount,allowedCounts,itemName},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'L_wing_validation'})}).catch(()=>{});
+                          // #endregion
+                          
+                          // Cancel any response and send correction
+                          safeSendToOpenAI({
+                            type: 'response.cancel'
+                          }, 'cancel response for invalid wing count');
+                          
+                          safeSendToOpenAI({
+                            type: 'response.create',
+                            response: {
+                              modalities: ['audio', 'text'],
+                              instructions: `YOU MUST SAY EXACTLY THIS: "We don't have ${requestedPieceCount}-piece wings. We have ${validOptions} pieces. Which would you like?"\n\nDo NOT proceed with the order until customer gives a valid piece count.`
+                            }
+                          }, 'wing piece count correction');
+                          
+                          break; // Don't add wings with invalid piece count
+                        }
+                      }
+                      
+                      // ============================================================
+                      // WING FLAVOR VALIDATION - Require flavor for wings
+                      // ============================================================
                       if (isWingsItem && !flavor) {
                         console.log(`🍗 Wings item "${itemName}" ordered without flavor - must ask for flavor!`);
                         
