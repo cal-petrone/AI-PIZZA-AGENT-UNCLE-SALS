@@ -372,8 +372,8 @@ CRITICAL RULES (MANDATORY - DO NOT SKIP):
 - Use EXACT total from ORDER summary - NEVER say "about"
 - After calling set_address → You MUST confirm the address back to customer
 - After calling set_customer_name → You MUST confirm the name back to customer
-- SIZE REQUIREMENT: If customer orders an item with multiple sizes (shown in menu) but doesn't specify size, you MUST ask "What size would you like?" BEFORE calling add_item_to_order
-- ITEM DESCRIPTIONS: If customer asks "what is [item]?" or "tell me about [item]" or "what's [item]?", use the description from the menu to explain what that item is
+- SIZE REQUIREMENT: If customer orders an item with multiple sizes (shown in menu as "sizes: small, medium, large") but doesn't specify size, you MUST ask "What size would you like?" BEFORE calling add_item_to_order. DO NOT call add_item_to_order without a size if the menu shows multiple sizes for that item.
+- ITEM DESCRIPTIONS: If customer asks "what is [item]?" or "tell me about [item]" or "what's [item]?" or "what does [item] come with?", you MUST use the EXACT description from the menu (shown after the item name with a dash). Read the description word-for-word from the menu - do NOT make up information or guess.
 
 CONFIRM PHRASES: "Got it.", "Perfect.", "Sure thing."`;
 }
@@ -861,22 +861,45 @@ function parseMenuFromSheets(rows, toppings = [], sizeGuide = []) {
     const lowerItem = itemName.toLowerCase();
     const lowerCategory = category.toLowerCase();
     
-    // Check sizeGuide for this item type/category
+    // Check sizeGuide for this item type/category - be more flexible with matching
     const matchingSizes = sizeGuide.filter(sg => {
       const sgType = (sg.itemType || '').toLowerCase();
-      return sgType === lowerCategory || 
-             sgType === lowerItem ||
-             lowerItem.includes(sgType) ||
-             sgType.includes(lowerItem.split(' ')[0]); // Match first word
+      const sgSize = (sg.size || '').toLowerCase();
+      
+      // Match by category (e.g., "Pizza" category matches "Pizza" in sizeGuide)
+      if (sgType === lowerCategory) return true;
+      
+      // Match by item name (e.g., "cheese pizza" matches "pizza" or "cheese pizza")
+      if (sgType === lowerItem) return true;
+      if (lowerItem.includes(sgType)) return true;
+      if (sgType.includes(lowerItem.split(' ')[0])) return true;
+      
+      // Special case: if sizeGuide has "Pizza" as itemType, match all pizza items
+      if (sgType === 'pizza' && lowerItem.includes('pizza') && !lowerItem.includes('create your own')) return true;
+      
+      return false;
     });
     
     if (matchingSizes.length > 0) {
       // Extract unique sizes from sizeGuide
       sizes = [...new Set(matchingSizes.map(sg => (sg.size || 'regular').toLowerCase()))];
+      // If we got sizes from sizeGuide, use them (don't default to regular)
+      if (sizes.length === 0) sizes = ['regular'];
     } else {
-      // Fallback: check common patterns
+      // Fallback: check common patterns - but only if sizeGuide has no matches
+      // For pizzas, check if there's a generic "Pizza" entry in sizeGuide
       if (lowerItem.includes('pizza') && !lowerItem.includes('create your own')) {
-        sizes = ['regular']; // Most pizzas have one size, use size guide for variations
+        // Check for generic pizza sizes in sizeGuide
+        const pizzaSizes = sizeGuide.filter(sg => {
+          const sgType = (sg.itemType || '').toLowerCase();
+          return sgType === 'pizza' || sgType.includes('pizza');
+        });
+        if (pizzaSizes.length > 0) {
+          sizes = [...new Set(pizzaSizes.map(sg => (sg.size || 'regular').toLowerCase()))];
+        } else {
+          // Default pizzas to have multiple sizes if not in sizeGuide
+          sizes = ['small', 'medium', 'large'];
+        }
       } else if (lowerItem.includes('wings')) {
         sizes = ['regular'];
       } else if (lowerItem.includes('salad')) {
@@ -3172,14 +3195,23 @@ wss.on('connection', (ws, req) => {
                       // Check if item has multiple sizes and size is missing
                       if (menuItemData && menuItemData.sizes && menuItemData.sizes.length > 1 && !size) {
                         console.log(`⚠️  Item "${itemName}" has multiple sizes (${menuItemData.sizes.join(', ')}) but no size provided - rejecting tool call`);
-                        // Send a session.update to instruct AI to ask for size
+                        // Send session.update to instruct AI to ask for size, then trigger a response
                         const sizeOptions = menuItemData.sizes.join(', ');
                         safeSendToOpenAI({
                           type: 'session.update',
                           session: {
-                            instructions: `CRITICAL: Customer ordered "${itemName}" but did not specify a size. This item comes in: ${sizeOptions}. You MUST ask "What size would you like?" before adding it to the order.`
+                            instructions: `CRITICAL: Customer ordered "${itemName}" but did not specify a size. This item comes in: ${sizeOptions}. You MUST ask "What size would you like?" Do NOT add the item to the order yet - wait for the customer to specify the size first.`
                           }
                         }, 'size request instruction');
+                        // Trigger a response to ask for size
+                        setTimeout(() => {
+                          safeSendToOpenAI({
+                            type: 'response.create',
+                            response: {
+                              modalities: ['text']
+                            }
+                          }, 'size request response');
+                        }, 100);
                         break; // Don't add item without size
                       }
                       
