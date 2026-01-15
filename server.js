@@ -403,10 +403,11 @@ function getMenuItemsOnDemand(menu, searchTerm = null) {
     }
     
     const sizes = data.sizes ? data.sizes.join('/') : '';
-    items.push(`${name}${sizes ? ` (${sizes})` : ''}`);
+    const desc = data.description ? ` - ${data.description}` : '';
+    items.push(`${name}${sizes ? ` (${sizes})` : ''}${desc}`);
   }
   
-  return items.length > 0 ? items.join(', ') : '';
+  return items.length > 0 ? items.join('\n') : '';
 }
 
 /**
@@ -472,6 +473,11 @@ ORDER: ${summary}`;
   // Estimate tokens and log
   const estimatedTokens = estimateTokens(instructions);
   console.log(`📊 Instructions: ~${estimatedTokens} tokens`);
+  
+  // #region agent log
+  // DEBUG: Log menu snippet being sent to AI
+  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:buildCompactInstructions',message:'INSTRUCTIONS_BUILT',data:{menuSnippetLength:menuSnippet?.length||0,menuSnippetPreview:menuSnippet?.substring(0,300)||'NONE',hasDescriptions:menuSnippet?.includes(' - ')||false},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D_instructions'})}).catch(()=>{});
+  // #endregion
   
   return instructions;
 }
@@ -839,6 +845,13 @@ function parseMenuFromSheets(rows, toppings = [], sizeGuide = []) {
     let priceStr = (row[3] || '').toString().trim();
     const description = (row[4] || '').toString().trim();
     
+    // #region agent log
+    // DEBUG: Log first 5 items with their descriptions to verify parsing
+    if (index < 5) {
+      fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:parseMenuFromSheets',message:'MENU_ROW_PARSED',data:{index:index,category:category,itemName:itemName,inStock:inStock,price:priceStr,description:description.substring(0,100),rowLength:row.length},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+    }
+    // #endregion
+    
     // Skip if not in stock
     if (inStock !== 'YES') {
       return;
@@ -939,6 +952,16 @@ function parseMenuFromSheets(rows, toppings = [], sizeGuide = []) {
   } else {
     console.log(`📋 Parsed ${itemCount} menu items from ${rows.length} rows`);
   }
+  
+  // #region agent log
+  // DEBUG: Log sample of menu items with descriptions
+  const menuSample = Object.entries(menu).slice(0, 5).map(([name, data]) => ({
+    name: name,
+    description: data.description ? data.description.substring(0, 80) : 'NO DESCRIPTION',
+    hasDesc: !!data.description
+  }));
+  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:parseMenuFromSheets:end',message:'MENU_PARSED_RESULT',data:{itemCount:itemCount,menuTextLength:menuText.length,sampleItems:menuSample,menuTextPreview:menuText.substring(0,500)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'B'})}).catch(()=>{});
+  // #endregion
 
   return {
     menu: menu,
@@ -2965,6 +2988,25 @@ wss.on('connection', (ws, req) => {
               // #region agent log
               // DEBUG: Track user input for name/address detection
               fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:user_transcript',message:'USER_SAID',data:{transcript:data.transcript,hasName:activeOrders.get(streamSid)?.customerName||'NOT_SET',hasAddress:activeOrders.get(streamSid)?.address||'NOT_SET',deliveryMethod:activeOrders.get(streamSid)?.deliveryMethod||'NOT_SET'},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A_user_input'})}).catch(()=>{});
+              // #endregion
+              
+              // #region agent log
+              // DEBUG: Detect "what is" questions about menu items
+              const lowerTranscript = data.transcript.toLowerCase();
+              if (lowerTranscript.includes('what is') || lowerTranscript.includes('what\'s') || lowerTranscript.includes('tell me about') || lowerTranscript.includes('what does')) {
+                // Try to find which item they're asking about
+                const menuItems = Object.keys(menu);
+                let matchedItem = null;
+                let matchedDesc = null;
+                for (const itemName of menuItems) {
+                  if (lowerTranscript.includes(itemName.toLowerCase())) {
+                    matchedItem = itemName;
+                    matchedDesc = menu[itemName]?.description || 'NO_DESCRIPTION_FOUND';
+                    break;
+                  }
+                }
+                fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:what_is_question',message:'USER_ASKED_WHAT_IS',data:{transcript:data.transcript,matchedItem:matchedItem,matchedDescription:matchedDesc,menuItemCount:menuItems.length},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'C_description'})}).catch(()=>{});
+              }
               // #endregion
               
               // TOKEN OPTIMIZATION: Track last 2 user turns for memory summary
