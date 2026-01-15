@@ -140,14 +140,14 @@ async function initializeGoogleSheets() {
 }
 
 /**
- * Format phone number as 315-876-3210
+ * Format phone number as (123) 456-0987
  * @param {string} phone - Phone number (digits only or with formatting)
- * @returns {string} Formatted phone number (315-876-3210) or appropriate fallback
+ * @returns {string} Formatted phone number ((123) 456-0987) or appropriate fallback
  */
 function formatPhoneNumber(phone) {
   // Handle missing/blocked/unknown phone numbers
   if (!phone) {
-    console.log('📞 Phone number missing - returning "Unknown"');
+    console.log('📞 PHONE_FORMAT: Phone number missing - returning "Unknown"');
     return 'Unknown';
   }
   
@@ -157,7 +157,7 @@ function formatPhoneNumber(phone) {
   if (phoneStr.includes('anonymous') || phoneStr.includes('blocked') || 
       phoneStr.includes('restricted') || phoneStr.includes('private') ||
       phoneStr === 'undefined' || phoneStr === 'null') {
-    console.log(`📞 Phone number is blocked/anonymous: "${phone}" - returning "Blocked"`);
+    console.log(`📞 PHONE_FORMAT: Phone is blocked/anonymous: "${phone}" - returning "Blocked"`);
     return 'Blocked';
   }
   
@@ -172,13 +172,13 @@ function formatPhoneNumber(phone) {
   
   // Must be 10 digits for US number
   if (cleanDigits.length !== 10) {
-    console.log(`📞 Phone number has ${cleanDigits.length} digits (expected 10): "${phone}" - returning raw`);
+    console.log(`📞 PHONE_FORMAT: Has ${cleanDigits.length} digits (expected 10): "${phone}" - returning raw`);
     return phone || 'Unknown';
   }
   
-  // Format as 315-876-3210
-  const formatted = `${cleanDigits.slice(0, 3)}-${cleanDigits.slice(3, 6)}-${cleanDigits.slice(6)}`;
-  console.log(`📞 Phone number formatted: "${phone}" -> "${formatted}"`);
+  // Format as (123) 456-0987
+  const formatted = `(${cleanDigits.slice(0, 3)}) ${cleanDigits.slice(3, 6)}-${cleanDigits.slice(6)}`;
+  console.log(`📞 PHONE_FORMAT: "${phone}" -> "${formatted}"`);
   return formatted;
 }
 
@@ -221,14 +221,36 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
       
       console.log(`📊 Price calculation: Subtotal: $${subtotal.toFixed(2)} + Tax (${(taxRate * 100).toFixed(0)}%): $${tax.toFixed(2)} = Total: $${total.toFixed(2)}`);
       
-      // Format items as string (include flavor for wings, modifiers for customization)
+      // Format items as string - MUST include ALL details for wings and other items
+      // Wings format: "1x Regular Wings (10 pieces, Hot, Blue Cheese)"
       const itemsString = order.items.map(item => {
         const qty = item.quantity || 1;
-        const size = item.size ? `${item.size} ` : '';
-        const flavor = item.flavor ? ` (${item.flavor})` : '';
-        const mods = item.modifiers ? ` [${item.modifiers}]` : '';
-        return `${qty}x ${size}${item.name}${flavor}${mods}`;
+        const name = item.name || 'Unknown Item';
+        
+        // Check if this is a wing item
+        const isWings = name.toLowerCase().includes('wing');
+        
+        if (isWings) {
+          // Wings: include piece count, flavor, dressing, and any modifiers
+          const parts = [];
+          if (item.size) parts.push(`${item.size} pieces`);
+          if (item.flavor) parts.push(item.flavor);
+          if (item.dressing) parts.push(item.dressing);
+          if (item.modifiers) parts.push(item.modifiers);
+          
+          const wingDetails = parts.length > 0 ? ` (${parts.join(', ')})` : '';
+          console.log(`🍗 WING_FORMAT: ${qty}x ${name}${wingDetails}`);
+          return `${qty}x ${name}${wingDetails}`;
+        } else {
+          // Non-wings: size, flavor (if any), modifiers
+          const size = item.size && item.size !== 'regular' ? `${item.size} ` : '';
+          const flavor = item.flavor ? ` (${item.flavor})` : '';
+          const mods = item.modifiers ? ` [${item.modifiers}]` : '';
+          return `${qty}x ${size}${name}${flavor}${mods}`;
+        }
       }).join('; '); // Use semicolon for multi-item separation (clearer)
+      
+      console.log('📝 ORDER_DETAILS_STRING:', itemsString);
       
       // Prepare row data - match your Google Sheet columns exactly (7 columns: A-G)
       // Column A: Name (capitalized)
@@ -431,24 +453,62 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
     
     const row = validatedRow;
       
-      // CRITICAL DEBUG: Log the exact payload being written
-      console.log('📝 LOG_PAYLOAD - Writing row to Google Sheets:');
-      console.log('📝 LOG_PAYLOAD:', JSON.stringify({
+      // ============================================================
+      // CRITICAL DEBUG: Full payload logging before write
+      // ============================================================
+      console.log('');
+      console.log('╔════════════════════════════════════════════════════════════╗');
+      console.log('║       FINAL GOOGLE SHEETS PAYLOAD - WRITING NOW            ║');
+      console.log('╚════════════════════════════════════════════════════════════╝');
+      console.log('📝 FINAL_PHONE:', row[1]);
+      console.log('📝 FINAL_NAME:', row[0]);
+      console.log('📝 FINAL_DELIVERY_METHOD:', row[2]);
+      console.log('📝 FINAL_ADDRESS:', row[3]);
+      console.log('📝 FINAL_TIME:', row[4]);
+      console.log('📝 FINAL_PRICE:', row[5]);
+      console.log('📝 FINAL_ORDER_DETAILS:', row[6]);
+      console.log('📝 FULL_PAYLOAD:', JSON.stringify({
         name: row[0],
         phone: row[1],
         deliveryMethod: row[2],
         address: row[3],
         time: row[4],
         price: row[5],
-        orderDetails: row[6]
+        orderDetails: row[6],
+        itemCount: order.items?.length || 0
       }, null, 2));
+      console.log('📝 RAW_ORDER_ITEMS:', JSON.stringify(order.items, null, 2));
+      console.log('════════════════════════════════════════════════════════════════');
+      console.log('');
       
-      // CRITICAL: Verify phone is present
-      if (!row[1] || row[1] === '' || row[1] === undefined) {
-        console.error('❌❌❌ CRITICAL: Phone number is BLANK in row! This should never happen!');
-        console.error('❌ Order customerPhone:', order.customerPhone);
+      // ============================================================
+      // SANITY CHECKS - Prevent bad data from being written
+      // ============================================================
+      
+      // Check 1: Phone must not be blank
+      if (!row[1] || row[1] === '' || row[1] === undefined || row[1] === 'not provided') {
+        console.error('❌❌❌ SANITY_CHECK_FAILED: Phone number is BLANK!');
+        console.error('❌ Raw order.customerPhone:', order.customerPhone);
         row[1] = 'Unknown'; // Fallback to prevent blank
       }
+      
+      // Check 2: Order details must not be blank
+      if (!row[6] || row[6] === '' || row[6] === undefined) {
+        console.error('❌❌❌ SANITY_CHECK_FAILED: Order details is BLANK!');
+        console.error('❌ order.items:', JSON.stringify(order.items));
+        // Don't write if no order details
+        console.error('❌ ABORTING WRITE - No order details');
+        return false;
+      }
+      
+      // Check 3: Verify order has at least 1 item
+      if (!order.items || order.items.length === 0) {
+        console.error('❌❌❌ SANITY_CHECK_FAILED: Order has 0 items!');
+        console.error('❌ ABORTING WRITE - Empty order');
+        return false;
+      }
+      
+      console.log('✅ All sanity checks passed - proceeding with write');
       
       // Append to sheet - write to columns A through G (7 columns)
       const response = await sheetsClient.spreadsheets.values.append({

@@ -2490,9 +2490,13 @@ wss.on('connection', (ws, req) => {
                     type: 'string',
                     description: 'REQUIRED FOR WINGS: The wing flavor (e.g., "hot", "mild", "bbq", "garlic parmesan", "buffalo"). You MUST ask the customer for their flavor choice if ordering wings and they did not specify.'
                   },
+                  dressing: {
+                    type: 'string',
+                    description: 'For wings: the dressing/dip choice (e.g., "blue cheese", "ranch"). Ask customer if they want blue cheese or ranch with their wings.'
+                  },
                   modifiers: {
                     type: 'string',
-                    description: 'Any special instructions or modifiers (e.g., "extra crispy", "no onions", "with blue cheese")'
+                    description: 'Any special instructions or modifiers (e.g., "extra crispy", "no onions", "side of hot sauce")'
                   }
                 },
                 required: ['name']
@@ -3909,7 +3913,7 @@ wss.on('connection', (ws, req) => {
                         currentOrder.items[existingItemIndex].quantity += quantity;
                         console.log(`✅ Updated item quantity: ${currentOrder.items[existingItemIndex].quantity}x ${size || 'regular'} ${itemName}`);
                       } else {
-                        // Add new item with flavor and modifiers
+                        // Add new item with ALL details for proper logging
                         const newItem = {
                           name: itemName,
                           size: size || 'regular',
@@ -3924,6 +3928,13 @@ wss.on('connection', (ws, req) => {
                           console.log(`🍗 Added wing flavor: ${flavor}`);
                         }
                         
+                        // Add dressing for wings (extract from modifiers or toolInput)
+                        const dressing = toolInput.dressing;
+                        if (dressing) {
+                          newItem.dressing = dressing;
+                          console.log(`🍗 Added wing dressing: ${dressing}`);
+                        }
+                        
                         // Add modifiers/notes
                         if (modifiers) {
                           newItem.modifiers = modifiers;
@@ -3931,6 +3942,9 @@ wss.on('connection', (ws, req) => {
                         }
                         
                         currentOrder.items.push(newItem);
+                        
+                        // DEBUG: Log complete item structure
+                        console.log('📦 ITEM_ADDED_FULL:', JSON.stringify(newItem, null, 2));
                         
                         // #region agent log
                         fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:item_added',message:'ITEM_ADDED_TO_ORDER',data:{itemName,size:size||'regular',quantity,price:itemPrice,flavor:flavor||null,modifiers:modifiers||null,totalItems:currentOrder.items.length},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'J_multiitem'})}).catch(()=>{});
@@ -5320,15 +5334,23 @@ wss.on('connection', (ws, req) => {
   
   // Send order to all configured integrations
   async function logOrder(order, storeConfig = {}) {
-    console.log('📝 Logging order to all configured services...');
+    console.log('');
+    console.log('╔════════════════════════════════════════════════════════════╗');
+    console.log('║              LOGGING ORDER TO GOOGLE SHEETS                ║');
+    console.log('╚════════════════════════════════════════════════════════════╝');
+    
+    // ============================================================
+    // COMPREHENSIVE DEBUG: Log ALL order details at entry
+    // ============================================================
+    console.log('📞 CUSTOMER_PHONE:', order.customerPhone || 'NULL');
+    console.log('👤 CUSTOMER_NAME:', order.customerName || 'NULL');
+    console.log('🚗 DELIVERY_METHOD:', order.deliveryMethod || 'NULL');
+    console.log('📍 ADDRESS:', order.address || 'NULL');
+    console.log('📦 ITEM_COUNT:', order.items?.length || 0);
+    console.log('📦 ALL_ITEMS:', JSON.stringify(order.items, null, 2));
     
     // #region agent log
-    // DEBUG: Log order address status at entry to logOrder
-    console.log('🔍🔍🔍 DEBUG logOrder ENTRY - ADDRESS STATUS:');
-    console.log('🔍 order.address:', order.address || 'NULL/UNDEFINED');
-    console.log('🔍 order.addressConfirmed:', order.addressConfirmed || false);
-    console.log('🔍 order.deliveryMethod:', order.deliveryMethod || 'NULL/UNDEFINED');
-    fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:logOrder_entry',message:'LOG_ORDER_ADDRESS_CHECK',data:{address:order.address||'NULL',addressConfirmed:order.addressConfirmed||false,deliveryMethod:order.deliveryMethod||'NULL'},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H1_logOrder_entry'})}).catch(()=>{});
+    fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:logOrder_entry',message:'LOG_ORDER_ENTRY',data:{customerPhone:order.customerPhone||'NULL',customerName:order.customerName||'NULL',deliveryMethod:order.deliveryMethod||'NULL',address:order.address||'NULL',itemCount:order.items?.length||0,items:order.items?.map(i=>({name:i.name,flavor:i.flavor,size:i.size}))},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'M_order_logging'})}).catch(()=>{});
     // #endregion
     
     // CRITICAL: Validate order before logging
