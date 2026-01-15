@@ -265,6 +265,7 @@ const { calculateOrderTotals } = require('./integrations/google-sheets');
 /**
  * Calculate exact order total from items (with 8% NYS tax)
  * Uses shared calculateOrderTotals function for consistency
+ * CRITICAL: Store totals in order state so both speaking and logging use the SAME value
  */
 function calculateOrderTotal(order) {
   if (!order || !order.items || order.items.length === 0) {
@@ -272,7 +273,27 @@ function calculateOrderTotal(order) {
   }
   
   // Use shared calculation function - SINGLE SOURCE OF TRUTH
-  return calculateOrderTotals(order.items, 0.08);
+  const totals = calculateOrderTotals(order.items, 0.08);
+  
+  // CRITICAL: Store totals in order state so both speaking and logging use the SAME value
+  // This ensures spoken total = logged total
+  order.totals = totals;
+  
+  return totals;
+}
+
+/**
+ * Get totals from order - use stored totals if available, otherwise calculate and store
+ * This ensures we always use the same calculated total for both speaking and logging
+ */
+function getOrderTotals(order) {
+  // If totals already calculated and stored, use them
+  if (order.totals && typeof order.totals.total === 'number') {
+    return order.totals;
+  }
+  
+  // Otherwise calculate and store
+  return calculateOrderTotal(order);
 }
 
 /**
@@ -287,14 +308,15 @@ function createConversationSummary(order) {
     ? order.items.map(i => `${i.quantity}x ${i.size || ''} ${i.name}`.trim()).join(', ')
     : 'none';
   
-  // Calculate exact total - SINGLE SOURCE OF TRUTH (same as Google Sheets)
-  const totals = calculateOrderTotal(order);
+  // CRITICAL: Get totals from order state - this is the SINGLE SOURCE OF TRUTH
+  // If totals are stored, use them; otherwise calculate and store
+  const totals = getOrderTotals(order);
   
-  // CRITICAL: Log spoken total for debugging
+  // CRITICAL: Log spoken total for debugging - this is what will be announced
   console.log('💰 SPOKEN_TOTAL:', totals.total, JSON.stringify(totals));
   
   // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:createConversationSummary',message:'SPOKEN_TOTAL_CALCULATED',data:{itemsCount:order.items?.length||0,items:items,subtotal:totals.subtotal,tax:totals.tax,total:totals.total},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'R_total_unification'})}).catch(()=>{});
+  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:createConversationSummary',message:'SPOKEN_TOTAL_CALCULATED',data:{itemsCount:order.items?.length||0,items:items,subtotal:totals.subtotal,tax:totals.tax,total:totals.total,orderTotalsStored:!!order.totals},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'R_total_unification'})}).catch(()=>{});
   // #endregion
   
   // Ultra-compact format to save tokens
@@ -3133,6 +3155,12 @@ wss.on('connection', (ws, req) => {
                         // Update quantity if item already exists (non-wings)
                         currentOrder.items[existingItemIndex].quantity += finalQuantity2;
                         console.log(`✅ Updated item quantity: ${currentOrder.items[existingItemIndex].quantity}x ${itemName}`);
+                        
+                        // CRITICAL: Clear stored totals when items change
+                        if (currentOrder.totals) {
+                          delete currentOrder.totals;
+                          console.log('💰 Cleared stored totals - will recalculate with updated quantity (backup handler)');
+                        }
                       } else {
                         // Add new item with proper wing parsing
                         const newItem2 = {
@@ -3155,6 +3183,12 @@ wss.on('connection', (ws, req) => {
                         if (modifiers2) newItem2.modifiers = modifiers2;
                         
                         currentOrder.items.push(newItem2);
+                        
+                        // CRITICAL: Clear stored totals when items change
+                        if (currentOrder.totals) {
+                          delete currentOrder.totals;
+                          console.log('💰 Cleared stored totals - will recalculate with new item (backup handler)');
+                        }
                         
                         // DEBUG: Log complete item structure
                         console.log('📦 ITEM_ADDED_FULL (backup handler):', JSON.stringify(newItem2, null, 2));
@@ -4135,6 +4169,12 @@ wss.on('connection', (ws, req) => {
                         // Update quantity if item already exists (only for non-wing items)
                         currentOrder.items[existingItemIndex].quantity += finalQuantity;
                         console.log(`✅ Updated item quantity: ${currentOrder.items[existingItemIndex].quantity}x ${size || 'regular'} ${itemName}`);
+                        
+                        // CRITICAL: Clear stored totals when items change - they need to be recalculated
+                        if (currentOrder.totals) {
+                          delete currentOrder.totals;
+                          console.log('💰 Cleared stored totals - will recalculate with updated quantity');
+                        }
                       } else {
                         // Add new item with ALL details for proper logging
                         const newItem = {
@@ -4177,6 +4217,13 @@ wss.on('connection', (ws, req) => {
                         }
                         
                         currentOrder.items.push(newItem);
+                        
+                        // CRITICAL: Clear stored totals when items change - they need to be recalculated
+                        // This ensures totals are always up-to-date with current items
+                        if (currentOrder.totals) {
+                          delete currentOrder.totals;
+                          console.log('💰 Cleared stored totals - will recalculate with new item');
+                        }
                         
                         // DEBUG: Log complete item structure
                         console.log('📦 ITEM_ADDED_FULL:', JSON.stringify(newItem, null, 2));

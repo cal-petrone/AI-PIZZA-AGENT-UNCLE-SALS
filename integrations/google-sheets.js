@@ -247,11 +247,31 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
       });
       
       // CRITICAL: Use SINGLE SOURCE OF TRUTH for totals
-      // This same calculation is used for spoken totals
-      const taxRate = parseFloat(storeConfig.taxRate) || 0.08; // 8% NYS tax
-      const totals = calculateOrderTotals(order.items, taxRate);
+      // If totals are stored in order state (from spoken total), use those
+      // Otherwise calculate using the same function as spoken totals
+      let totals;
+      if (order.totals && typeof order.totals.total === 'number') {
+        // Use stored totals from order state - this is what was spoken to customer
+        totals = order.totals;
+        console.log('📊 LOGGED_TOTAL: Using stored totals from order state:', JSON.stringify(totals));
+      } else {
+        // Calculate using same function as spoken totals
+        const taxRate = parseFloat(storeConfig.taxRate) || 0.08; // 8% NYS tax
+        totals = calculateOrderTotals(order.items, taxRate);
+        // Store in order for consistency
+        order.totals = totals;
+        console.log('📊 LOGGED_TOTAL: Calculated new totals:', JSON.stringify(totals));
+      }
       
-      console.log(`📊 LOGGED_TOTAL: Subtotal: $${totals.subtotal.toFixed(2)} + Tax (${(taxRate * 100).toFixed(0)}%): $${totals.tax.toFixed(2)} = Total: $${totals.total.toFixed(2)}`);
+      console.log(`📊 LOGGED_TOTAL: Subtotal: $${totals.subtotal.toFixed(2)} + Tax: $${totals.tax.toFixed(2)} = Total: $${totals.total.toFixed(2)}`);
+      
+      // CRITICAL: Consistency check - spoken total must equal logged total
+      console.log('💰💰💰 TOTAL_CHECK:', JSON.stringify({
+        spokenTotal: order.totals?.total || totals.total,
+        sheetTotal: totals.total,
+        orderItems: order.items.map(i => ({ name: i.name, qty: i.quantity, price: i.price })),
+        totalsMatch: (order.totals?.total || totals.total) === totals.total
+      }));
       
       // Format items as string - MUST include ALL details for wings and other items
       // Wings format: "1x Regular Wings (10 pieces, Hot, Blue Cheese)"
