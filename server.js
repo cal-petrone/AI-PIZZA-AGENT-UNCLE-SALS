@@ -775,71 +775,144 @@ async function fetchMenuFromGoogleSheets() {
 
 /**
  * Parse Google Sheets rows into menu format
+ * Supports two formats:
+ * 1. Old format: A=Name, B=Size, C=Price, D=Category, E=Available
+ * 2. New format: A=Name, B=Price, G=Size (comma-separated), H=Available
  */
 function parseMenuFromSheets(rows) {
   const menu = {};
   const menuTextByCategory = {};
   
+  // Detect format by checking first few rows
+  const detectFormat = (sampleRows) => {
+    if (sampleRows.length === 0) return 'old';
+    const firstRow = sampleRows[0] || [];
+    // If column G (index 6) has size info, it's new format
+    if (firstRow.length > 6 && firstRow[6] && firstRow[6].toString().toLowerCase().includes('small')) {
+      return 'new';
+    }
+    // If column B (index 1) looks like a size, it's old format
+    if (firstRow.length > 1 && firstRow[1] && ['small', 'medium', 'large', 'regular'].includes(firstRow[1].toString().toLowerCase())) {
+      return 'old';
+    }
+    // Default to new format if column B looks like a price
+    if (firstRow.length > 1 && firstRow[1] && /^\d+\.?\d*$/.test(firstRow[1].toString().trim())) {
+      return 'new';
+    }
+    return 'old';
+  };
+  
+  const format = detectFormat(rows.slice(0, 5)); // Check first 5 rows
+  console.log(`📋 Detected menu format: ${format === 'new' ? 'New (A=Name, B=Price, G=Size)' : 'Old (A=Name, B=Size, C=Price)'}`);
+  
   rows.forEach((row, index) => {
     // Skip empty rows
-    if (!row || row.length < 3) {
-      if (row && row.length > 0) {
-        console.log(`⚠️  Skipping row ${index + 2}: not enough columns (found ${row.length}, need at least 3)`);
-      }
+    if (!row || row.length < 2) {
       return;
     }
     
-    const itemName = (row[0] || '').trim().toLowerCase();
-    const size = (row[1] || 'regular').trim().toLowerCase();
-    // Handle price - try parsing as number, remove $ sign if present, handle empty strings
-    let priceStr = (row[2] || '').toString().trim();
-    // Remove $ sign if present
-    priceStr = priceStr.replace(/^\$/, '');
-    const price = parseFloat(priceStr) || 0;
-    const category = (row[3] || 'Other').trim();
-    const available = row[4] === undefined || row[4] === '' || 
-                     row[4].toString().toLowerCase() === 'true' || 
-                     row[4].toString().toLowerCase() === 'yes' ||
-                     row[4] === true;
-
-    // Skip if item is not available
-    if (!available) {
-      console.log(`⚠️  Skipping unavailable item: ${itemName} (${size})`);
-      return;
-    }
-
-    if (!itemName) {
-      console.warn(`⚠️  Skipping invalid row ${index + 2}: missing item name`);
-      if (index < 5) { // Log first 5 rows for debugging
-        console.warn(`   Row data: ${JSON.stringify(row)}`);
-      }
-      return;
-    }
+    let itemName, size, price, category, available;
     
-    // Allow items with price 0 (might be free items or pricing to be determined)
-    // Only skip if price is truly invalid (NaN after parseFloat)
-    if (isNaN(price) && priceStr !== '0' && priceStr !== '') {
-      console.warn(`⚠️  Skipping invalid row ${index + 2}: invalid price "${row[2]}" for "${itemName}"`);
-      if (index < 5) {
-        console.warn(`   Row data: ${JSON.stringify(row)}`);
+    if (format === 'new') {
+      // New format: A=Name, B=Price, G=Size (comma-separated), H=Available
+      itemName = (row[0] || '').trim();
+      if (!itemName) return;
+      
+      // Parse price from column B
+      let priceStr = (row[1] || '').toString().trim();
+      priceStr = priceStr.replace(/^\$/, '');
+      price = parseFloat(priceStr) || 0;
+      
+      // Parse sizes from column G (index 6) - can be "Small, Medium, Large" or single size
+      const sizeStr = (row[6] || 'regular').toString().trim();
+      const sizes = sizeStr.includes(',') 
+        ? sizeStr.split(',').map(s => s.trim().toLowerCase())
+        : [sizeStr.toLowerCase() || 'regular'];
+      
+      // Category from item name (extract if it contains category info)
+      category = 'Other';
+      if (itemName.toLowerCase().includes('pizza')) category = 'Pizza';
+      else if (itemName.toLowerCase().includes('salad')) category = 'Salad';
+      else if (itemName.toLowerCase().includes('sub') || itemName.toLowerCase().includes('gyro')) category = 'Subs & Gyros';
+      else if (itemName.toLowerCase().includes('burger')) category = 'Burgers';
+      else if (itemName.toLowerCase().includes('tender') || itemName.toLowerCase().includes('wing')) category = 'Chicken';
+      else if (itemName.toLowerCase().includes('fries') || itemName.toLowerCase().includes('stick') || itemName.toLowerCase().includes('ring')) category = 'Sides';
+      
+      // Available from column H (index 7) or assume true
+      const availableStr = (row[7] || '').toString().trim().toLowerCase();
+      available = availableStr === '' || availableStr === 'true' || availableStr === 'yes' || availableStr === 'as listed';
+      
+      if (!available) return;
+      
+      // Create menu entry for each size
+      const baseItemName = itemName.toLowerCase();
+      sizes.forEach(sizeOption => {
+        if (!menu[baseItemName]) {
+          menu[baseItemName] = {
+            sizes: [],
+            priceMap: {},
+            category: category
+          };
+        }
+        if (!menu[baseItemName].sizes.includes(sizeOption)) {
+          menu[baseItemName].sizes.push(sizeOption);
+        }
+        // Use same price for all sizes (or you could adjust if needed)
+        menu[baseItemName].priceMap[sizeOption] = price;
+      });
+      
+    } else {
+      // Old format: A=Name, B=Size, C=Price, D=Category, E=Available
+      itemName = (row[0] || '').trim().toLowerCase();
+      size = (row[1] || 'regular').trim().toLowerCase();
+      let priceStr = (row[2] || '').toString().trim();
+      priceStr = priceStr.replace(/^\$/, '');
+      price = parseFloat(priceStr) || 0;
+      category = (row[3] || 'Other').trim();
+      available = row[4] === undefined || row[4] === '' || 
+                   row[4].toString().toLowerCase() === 'true' || 
+                   row[4].toString().toLowerCase() === 'yes' ||
+                   row[4] === true;
+
+      // Skip if item is not available
+      if (!available) {
+        console.log(`⚠️  Skipping unavailable item: ${itemName} (${size})`);
+        return;
       }
-      return;
-    }
 
-    // Initialize menu item if it doesn't exist
-    if (!menu[itemName]) {
-      menu[itemName] = {
-        sizes: [],
-        priceMap: {},
-        category: category
-      };
-    }
+      if (!itemName) {
+        console.warn(`⚠️  Skipping invalid row ${index + 2}: missing item name`);
+        if (index < 5) {
+          console.warn(`   Row data: ${JSON.stringify(row)}`);
+        }
+        return;
+      }
+      
+      // Allow items with price 0 (might be free items or pricing to be determined)
+      // Only skip if price is truly invalid (NaN after parseFloat)
+      if (isNaN(price) && priceStr !== '0' && priceStr !== '') {
+        console.warn(`⚠️  Skipping invalid row ${index + 2}: invalid price "${row[2]}" for "${itemName}"`);
+        if (index < 5) {
+          console.warn(`   Row data: ${JSON.stringify(row)}`);
+        }
+        return;
+      }
 
-    // Add size and price if not already added
-    if (!menu[itemName].sizes.includes(size)) {
-      menu[itemName].sizes.push(size);
+      // Initialize menu item if it doesn't exist
+      if (!menu[itemName]) {
+        menu[itemName] = {
+          sizes: [],
+          priceMap: {},
+          category: category
+        };
+      }
+
+      // Add size and price if not already added
+      if (!menu[itemName].sizes.includes(size)) {
+        menu[itemName].sizes.push(size);
+      }
+      menu[itemName].priceMap[size] = price;
     }
-    menu[itemName].priceMap[size] = price;
 
     // Track categories for formatting
     if (!menuTextByCategory[category]) {
