@@ -683,8 +683,8 @@ async function fetchMenuFromGoogleSheets() {
     // Fetch menu data (assuming it's in a sheet named "Menu" or "Sheet1")
     const sheetName = process.env.GOOGLE_SHEETS_MENU_SHEET || 'Menu';
     // Use a large explicit range to get ALL menu items (up to 1000 rows)
-    // Google Sheets API may limit results with open-ended ranges, so we use an explicit upper bound
-    const range = `${sheetName}!A2:E1000`; // Skip header row, get rows 2-1000 in columns A-E
+    // Include columns A-H to support both old format (A-E) and new format (A, B, G, H)
+    const range = `${sheetName}!A2:H1000`; // Skip header row, get rows 2-1000 in columns A-H
 
     console.log(`📋 Fetching menu from Google Sheets: ${menuSheetId}, sheet: ${sheetName}, range: ${range}`);
     
