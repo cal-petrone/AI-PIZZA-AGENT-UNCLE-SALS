@@ -693,9 +693,9 @@ async function fetchMenuFromGoogleSheets() {
     let toppingsRows = [];
     let sizeGuideRows = [];
     
-    // Fetch Menu Items sheet
+    // Fetch Menu Items sheet (A-R to capture all columns)
     try {
-      const menuRange = `'${menuSheetName}'!A2:E1000`;
+      const menuRange = `'${menuSheetName}'!A2:R1000`;
       console.log(`📋 Fetching menu items: ${menuRange}`);
       const menuResponse = await sheets.spreadsheets.values.get({
         spreadsheetId: menuSheetId,
