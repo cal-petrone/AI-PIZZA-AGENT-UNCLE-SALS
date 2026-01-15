@@ -49,8 +49,7 @@ function calculateOrderTotals(items, taxRate = 0.08) {
   };
 }
 
-// Export for use in server.js
-module.exports.calculateOrderTotals = calculateOrderTotals;
+// Export for use in server.js (will be combined with other exports at end of file)
 
 /**
  * Initialize Google Sheets client
@@ -710,5 +709,6 @@ module.exports = {
   logOrderToGoogleSheets,
   initializeSheetHeaders,
   formatPhoneNumber,
+  calculateOrderTotals, // SINGLE SOURCE OF TRUTH for order totals
 };
 
