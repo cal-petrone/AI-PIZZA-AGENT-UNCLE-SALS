@@ -366,15 +366,29 @@ ORDER FLOW (follow this EXACT sequence):
 7. Ask "And what name for the order?" → When given name → Call set_customer_name → Confirm name
 8. Call confirm_order → Say "Awesome, thanks for ordering with Uncle Sal's today!"
 
-WING ORDERING RULES (CRITICAL):
-- VALID PIECE COUNTS: 6, 10, 20, 30, or 50 ONLY - NO OTHER SIZES EXIST
-- If customer asks for invalid count (e.g., 12-piece), say: "We don't have 12-piece wings. We have 6, 10, 20, 30, or 50 pieces. Which would you like?"
-- ALWAYS ask for piece count: "How many pieces: 6, 10, 20, 30, or 50?"
-- ALWAYS ask for FLAVOR if not specified
-- Include "flavor" parameter when calling add_item_to_order for wings
-- Example: add_item_to_order(name="regular wings", size="10", flavor="hot")
-- DO NOT add wings without BOTH piece count AND flavor!
-- After both are given, confirm: "Got it, [count]-piece [flavor] wings."
+WING ORDERING RULES (CRITICAL - FOLLOW THIS EXACT ORDER):
+1. PIECE COUNT MUST BE ASKED FIRST (before flavor):
+   - If customer says "regular wings" or "wings" without piece count, you MUST ask:
+     "What size wings would you like: 6, 10, 20, 30, or 50 pieces?"
+   - VALID PIECE COUNTS: 6, 10, 20, 30, or 50 ONLY (from Wing_Options sheet)
+   - Do NOT ask about flavor until piece count is selected
+   - Do NOT call add_item_to_order until piece count is provided
+   
+2. AFTER piece count is selected, ask for FLAVOR:
+   - "What flavor would you like?" (use flavors from Wing_Options)
+   - Do NOT proceed without flavor
+   
+3. THEN ask for dressing:
+   - "Ranch or blue cheese?"
+   
+4. When calling add_item_to_order for wings:
+   - Include size parameter with piece count (e.g., size="10" for 10-piece)
+   - Include flavor parameter (e.g., flavor="hot")
+   - Example: add_item_to_order(name="regular wings", size="10", flavor="hot")
+   
+5. If customer says invalid count (e.g., 12 or 40):
+   - Say: "We don't have that size. We have 6, 10, 20, 30, or 50 pieces. Which would you like?"
+   - Do NOT proceed until valid piece count is given
 
 MULTI-ITEM ORDERS:
 - Customers can order as many items as they want - NO LIMIT
@@ -3020,15 +3034,61 @@ wss.on('connection', (ws, req) => {
                         finalQuantity2 = 1;
                       }
                       
-                      if (!pieceCount2) pieceCount2 = 10;
+                      // CRITICAL: If pieceCount is missing, REJECT and ask for it FIRST
+                      if (!pieceCount2) {
+                        console.log(`🍗❌ PIECE COUNT MISSING (backup handler) - REJECTING ORDER`);
+                        const validOptions2 = allowedCounts2.join(', ');
+                        
+                        safeSendToOpenAI({
+                          type: 'response.cancel'
+                        }, 'cancel - need piece count first');
+                        
+                        safeSendToOpenAI({
+                          type: 'session.update',
+                          session: {
+                            instructions: `CRITICAL: Customer ordered wings but did NOT specify piece count. You MUST ask for piece count FIRST. Say: "What size wings would you like: ${validOptions2} pieces?" Do NOT ask about flavor yet.`
+                          }
+                        }, 'wing piece count required first (backup)');
+                        
+                        safeSendToOpenAI({
+                          type: 'response.create',
+                          response: {
+                            modalities: ['audio', 'text'],
+                            instructions: `YOU MUST SAY: "What size wings would you like: ${validOptions2} pieces?"\n\nAsk for piece count FIRST, not flavor.`
+                          }
+                        }, 'ask for wing piece count first (backup)');
+                        
+                        return; // Don't proceed
+                      }
+                      
+                      // Validate piece count
+                      if (!allowedCounts2.includes(pieceCount2)) {
+                        console.log(`🍗❌ INVALID PIECE COUNT (backup): ${pieceCount2}`);
+                        const validOptions2 = allowedCounts2.join(', ');
+                        
+                        safeSendToOpenAI({
+                          type: 'response.cancel'
+                        }, 'cancel - invalid piece count');
+                        
+                        safeSendToOpenAI({
+                          type: 'response.create',
+                          response: {
+                            modalities: ['audio', 'text'],
+                            instructions: `YOU MUST SAY: "We don't have ${pieceCount2}-piece wings. We have ${validOptions2} pieces. Which would you like?"`
+                          }
+                        }, 'correct invalid piece count (backup)');
+                        
+                        return;
+                      }
                       
                       // Lookup price from Wing_Options
                       const matchingOption2 = validPieceCounts2.find(pc => pc.name.includes(String(pieceCount2)));
                       if (matchingOption2 && matchingOption2.price > 0) {
                         wingPrice2 = matchingOption2.price;
+                        console.log(`🍗 Found wing price (backup): ${pieceCount2}-piece = $${wingPrice2}`);
                       }
                       
-                      console.log(`🍗 FINAL: quantity=${finalQuantity2}, pieceCount=${pieceCount2}, price=$${wingPrice2}`);
+                      console.log(`🍗 FINAL (backup): quantity=${finalQuantity2}, pieceCount=${pieceCount2}, price=$${wingPrice2}`);
                     }
                     
                     // Check if item already exists to prevent duplicates
@@ -3920,10 +3980,36 @@ wss.on('connection', (ws, req) => {
                           console.log(`🍗 INFERRED: quantity ${quantity} looks like pieceCount. Set quantity=1, pieceCount=${pieceCount}`);
                         }
                         
-                        // Default pieceCount if not specified
+                        // CRITICAL: If pieceCount is missing, REJECT and ask for it FIRST
+                        // Do NOT default to 10 - we MUST ask the customer!
                         if (!pieceCount) {
-                          pieceCount = 10; // Default to 10-piece if not specified
-                          console.log(`🍗 No pieceCount specified - defaulting to ${pieceCount}`);
+                          console.log(`🍗❌ PIECE COUNT MISSING - REJECTING ORDER - MUST ASK FIRST`);
+                          const validOptions = validCountNumbers.join(', ');
+                          
+                          // #region agent log
+                          fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:wing_piece_missing',message:'WING_PIECE_COUNT_MISSING',data:{itemName,validOptions,rawQuantity:quantity,rawSize:size||'NULL'},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'Q_wing_required'})}).catch(()=>{});
+                          // #endregion
+                          
+                          safeSendToOpenAI({
+                            type: 'response.cancel'
+                          }, 'cancel response - need piece count first');
+                          
+                          safeSendToOpenAI({
+                            type: 'session.update',
+                            session: {
+                              instructions: `CRITICAL: Customer ordered wings but did NOT specify a piece count. You MUST ask for piece count FIRST before asking about flavor. Say: "What size wings would you like: ${validOptions} pieces?" Do NOT ask about flavor yet. Do NOT add wings to the order until piece count is provided.`
+                            }
+                          }, 'wing piece count required first');
+                          
+                          safeSendToOpenAI({
+                            type: 'response.create',
+                            response: {
+                              modalities: ['audio', 'text'],
+                              instructions: `YOU MUST SAY EXACTLY THIS: "What size wings would you like: ${validOptions} pieces?"\n\nDo NOT ask about flavor yet. Ask for piece count FIRST.`
+                            }
+                          }, 'ask for wing piece count first');
+                          
+                          break; // Don't proceed without piece count
                         }
                         
                         console.log(`🍗 FINAL PARSE: quantity=${finalQuantity}, pieceCount=${pieceCount}`);
