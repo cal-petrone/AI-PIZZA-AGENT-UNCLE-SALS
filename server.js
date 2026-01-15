@@ -259,30 +259,20 @@ function shouldDebounceResponse(streamSid) {
   return false;
 }
 
+// Import shared calculation function from google-sheets.js
+const { calculateOrderTotals } = require('./integrations/google-sheets');
+
 /**
  * Calculate exact order total from items (with 8% NYS tax)
+ * Uses shared calculateOrderTotals function for consistency
  */
 function calculateOrderTotal(order) {
   if (!order || !order.items || order.items.length === 0) {
     return { subtotal: 0, tax: 0, total: 0 };
   }
   
-  let subtotal = 0;
-  order.items.forEach(item => {
-    const itemPrice = item.price || 0;
-    const quantity = item.quantity || 1;
-    subtotal += itemPrice * quantity;
-  });
-  
-  const taxRate = 0.08; // 8% NYS tax
-  const tax = subtotal * taxRate;
-  const total = subtotal + tax;
-  
-  return {
-    subtotal: Math.round(subtotal * 100) / 100,
-    tax: Math.round(tax * 100) / 100,
-    total: Math.round(total * 100) / 100
-  };
+  // Use shared calculation function - SINGLE SOURCE OF TRUTH
+  return calculateOrderTotals(order.items, 0.08);
 }
 
 /**
@@ -297,10 +287,14 @@ function createConversationSummary(order) {
     ? order.items.map(i => `${i.quantity}x ${i.size || ''} ${i.name}`.trim()).join(', ')
     : 'none';
   
-  // Calculate exact total
+  // Calculate exact total - SINGLE SOURCE OF TRUTH (same as Google Sheets)
   const totals = calculateOrderTotal(order);
+  
+  // CRITICAL: Log spoken total for debugging
+  console.log('💰 SPOKEN_TOTAL:', totals.total, JSON.stringify(totals));
+  
   // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:301',message:'Building order summary',data:{itemsCount:order.items?.length||0,items:items,subtotal:totals.subtotal,tax:totals.tax,total:totals.total},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:createConversationSummary',message:'SPOKEN_TOTAL_CALCULATED',data:{itemsCount:order.items?.length||0,items:items,subtotal:totals.subtotal,tax:totals.tax,total:totals.total},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'R_total_unification'})}).catch(()=>{});
   // #endregion
   
   // Ultra-compact format to save tokens
@@ -1482,8 +1476,13 @@ app.post('/incoming-call', (req, res) => {
     console.log('Request headers:', req.headers);
     
     // CRITICAL: Get caller's phone number from Twilio POST request
+    // This is the PRIMARY source - MUST capture here
     const callerPhone = req.body.From || req.body.Caller || req.body.CallerId || null;
     const callSid = req.body.CallSid || null;
+    
+    // CRITICAL: Log caller phone at call start
+    console.log('📞 CALLER_FROM (incoming-call webhook):', callerPhone || 'NULL/UNDEFINED');
+    console.log('📞 CallSid:', callSid);
     
     if (callerPhone) {
       // Clean phone number (remove +1 prefix if present, keep only digits)
@@ -1493,10 +1492,16 @@ app.post('/incoming-call', (req, res) => {
       // Store phone number by callSid so we can retrieve it when Media Stream connects
       if (callSid) {
         callerPhoneNumbers.set(callSid, cleanPhone);
-        console.log('✓ Stored caller phone for callSid:', callSid);
+        console.log('✓ Stored caller phone for callSid:', callSid, '->', cleanPhone);
       }
     } else {
-      console.warn('⚠️  No caller phone number found in request');
+      console.error('❌❌❌ CRITICAL: No caller phone number found in Twilio webhook!');
+      console.error('❌ Request body:', JSON.stringify(req.body, null, 2));
+      // Store "Unknown" as fallback
+      if (callSid) {
+        callerPhoneNumbers.set(callSid, 'Unknown');
+        console.log('⚠️  Stored "Unknown" as fallback phone for callSid:', callSid);
+      }
     }
     
     const twiml = new twilio.twiml.VoiceResponse();
@@ -1977,14 +1982,21 @@ wss.on('connection', (ws, req) => {
           const callSid = data.start.callSid;
           
           // CRITICAL: Get caller's phone number from stored map
-          const callerPhone = callerPhoneNumbers.get(callSid) || null;
+          let callerPhone = callerPhoneNumbers.get(callSid) || null;
+          
           if (callerPhone) {
             console.log('📞 Retrieved caller phone number for call:', callerPhone);
-            // Clean up after retrieving (optional - for memory management)
-            // callerPhoneNumbers.delete(callSid);
           } else {
-            console.warn('⚠️  No caller phone number found for callSid:', callSid);
+            console.error('❌❌❌ CRITICAL: No caller phone found in map for callSid:', callSid);
+            console.error('❌ Available callSids in map:', Array.from(callerPhoneNumbers.keys()));
+            // Set fallback - MUST have a phone number
+            callerPhone = 'Unknown';
+            callerPhoneNumbers.set(callSid, 'Unknown');
+            console.log('⚠️  Set "Unknown" as fallback phone for callSid:', callSid);
           }
+          
+          // CRITICAL: Log phone number at stream start
+          console.log('📞 CALLER_PHONE_AT_STREAM_START:', callerPhone);
           
           // CRITICAL: Clean up any existing OpenAI connection from previous call
           // This prevents multiple connections and state confusion
@@ -2024,13 +2036,18 @@ wss.on('connection', (ws, req) => {
           console.log('✓ Production mode: Ensuring consistent, smooth experience for every call');
           
           // Initialize order tracking with caller's phone number
+          // CRITICAL: Phone MUST be set - never null/undefined
+          const orderPhone = callerPhone || 'Unknown';
+          
+          console.log('📞 ORDER_INIT_PHONE:', orderPhone);
+          
           order = {
             items: [],
             deliveryMethod: null,
             address: null,
             addressConfirmed: false, // Track if address was confirmed back to customer
             customerName: null,
-            customerPhone: callerPhone || null, // Use actual caller phone number
+            customerPhone: orderPhone, // CRITICAL: Always set, never null
             paymentMethod: null,
             confirmed: false,
             logged: false, // Track if order has been logged to prevent duplicates
@@ -2038,6 +2055,10 @@ wss.on('connection', (ws, req) => {
             from: callSid // Keep callSid for reference, but use customerPhone for logging
           };
           activeOrders.set(streamSid, order);
+          
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:order_init',message:'ORDER_INITIALIZED_WITH_PHONE',data:{streamSid:streamSid,customerPhone:orderPhone,callSid:callSid},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'S_phone_capture'})}).catch(()=>{});
+          // #endregion
           // #region agent log
           fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:1472',message:'Order initialized',data:{streamSid:streamSid,customerPhone:callerPhone,itemsCount:0},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
           // #endregion

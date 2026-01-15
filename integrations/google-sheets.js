@@ -20,6 +20,39 @@ let sheetsClient = null;
 let spreadsheetId = null;
 
 /**
+ * Calculate order totals - SINGLE SOURCE OF TRUTH
+ * Used by both spoken confirmation and Google Sheets logging
+ * @param {Array} items - Order items array
+ * @param {number} taxRate - Tax rate (default 0.08 for 8% NYS tax)
+ * @returns {Object} { subtotal, tax, total }
+ */
+function calculateOrderTotals(items, taxRate = 0.08) {
+  if (!items || items.length === 0) {
+    return { subtotal: 0, tax: 0, total: 0 };
+  }
+  
+  let subtotal = 0;
+  items.forEach(item => {
+    const itemPrice = parseFloat(item.price) || 0;
+    const quantity = parseInt(item.quantity) || 1;
+    const itemTotal = itemPrice * quantity;
+    subtotal += itemTotal;
+  });
+  
+  const tax = subtotal * taxRate;
+  const total = subtotal + tax;
+  
+  return {
+    subtotal: Math.round(subtotal * 100) / 100,
+    tax: Math.round(tax * 100) / 100,
+    total: Math.round(total * 100) / 100
+  };
+}
+
+// Export for use in server.js
+module.exports.calculateOrderTotals = calculateOrderTotals;
+
+/**
  * Initialize Google Sheets client
  */
 async function initializeGoogleSheets() {
@@ -199,27 +232,27 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
   
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      // CRITICAL: Calculate totals - MUST include all items PLUS 8% NYS tax
-      let subtotal = 0;
+      // CRITICAL: Validate order has items
       if (!order.items || order.items.length === 0) {
         console.error('❌ ERROR: Order has no items - cannot calculate total');
         console.error('❌ Order object:', JSON.stringify(order, null, 2));
         return false; // Don't log orders with no items
       }
       
+      // Log item details for debugging
       order.items.forEach(item => {
         const itemPrice = parseFloat(item.price) || 0;
         const itemQuantity = parseInt(item.quantity) || 1;
         const itemTotal = itemPrice * itemQuantity;
-        subtotal += itemTotal;
         console.log(`  - Item: ${itemQuantity}x ${item.name} @ $${itemPrice.toFixed(2)} = $${itemTotal.toFixed(2)}`);
       });
       
+      // CRITICAL: Use SINGLE SOURCE OF TRUTH for totals
+      // This same calculation is used for spoken totals
       const taxRate = parseFloat(storeConfig.taxRate) || 0.08; // 8% NYS tax
-      const tax = subtotal * taxRate;
-      const total = subtotal + tax; // CRITICAL: Total = Subtotal + Tax (8%)
+      const totals = calculateOrderTotals(order.items, taxRate);
       
-      console.log(`📊 Price calculation: Subtotal: $${subtotal.toFixed(2)} + Tax (${(taxRate * 100).toFixed(0)}%): $${tax.toFixed(2)} = Total: $${total.toFixed(2)}`);
+      console.log(`📊 LOGGED_TOTAL: Subtotal: $${totals.subtotal.toFixed(2)} + Tax (${(taxRate * 100).toFixed(0)}%): $${totals.tax.toFixed(2)} = Total: $${totals.total.toFixed(2)}`);
       
       // Format items as string - MUST include ALL details for wings and other items
       // Wings format: "1x Regular Wings (10 pieces, Hot, Blue Cheese)"
@@ -283,9 +316,24 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
         ).join(' ');
       };
       
-    // CRITICAL: Use customerPhone if available, format as 315-876-3210
-    // Do NOT use order.from as it contains callSid, not phone number
+    // ============================================================
+    // CRITICAL: Phone number MUST NEVER be blank
+    // ============================================================
+    console.log('📞 CALLER_FROM (at sheet write):', order.customerPhone || 'NULL/UNDEFINED');
+    
+    // CRITICAL: If phone is missing, set fallback BEFORE formatting
+    if (!order.customerPhone || order.customerPhone === 'null' || order.customerPhone === 'undefined') {
+      console.error('❌❌❌ CRITICAL: customerPhone is missing! Setting to "Unknown"');
+      order.customerPhone = 'Unknown';
+    }
+    
+    // Format phone number (handles blocked/unknown internally)
     const phoneNumber = formatPhoneNumber(order.customerPhone);
+    
+    // FINAL validation: ensure phoneNumber is never blank
+    const finalPhoneForSheet = phoneNumber || 'Unknown';
+    
+    console.log('📞 FINAL_PHONE_FOR_SHEET:', finalPhoneForSheet);
     
     // CRITICAL: Format Column C - ALWAYS include address if delivery is selected
     // CRITICAL: Validate deliveryMethod BEFORE using it - prevent mystery rows
@@ -376,8 +424,8 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
       ? capitalizeWords(order.customerName.trim())
       : 'Not Provided';
     
-    // Column B: Phone - already formatted as 315-876-3210 by formatPhoneNumber()
-    const validatedPhone = phoneNumber || 'Not Provided';
+    // Column B: Phone - use finalPhoneForSheet (never blank)
+    const validatedPhone = finalPhoneForSheet;
     
     // Column C: Pick Up/Delivery (just "Pickup" or "Delivery", capitalized)
     // Column D: Delivery Address (address if delivery, "-" if pickup)
@@ -417,9 +465,9 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
       validatedTime = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
     }
     
-    // Column F: Price (formatted with $ sign)
-    const validatedPrice = (typeof total === 'number' && !isNaN(total) && total >= 0) 
-      ? `$${total.toFixed(2)}`
+    // Column F: Price (formatted with $ sign) - use totals.total from shared calculation
+    const validatedPrice = (typeof totals.total === 'number' && !isNaN(totals.total) && totals.total >= 0) 
+      ? `$${totals.total.toFixed(2)}`
       : '$0.00';
     
     // Column G: Order Details (capitalized)
@@ -499,11 +547,14 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
       // SANITY CHECKS - Prevent bad data from being written
       // ============================================================
       
-      // Check 1: Phone must not be blank
-      if (!row[1] || row[1] === '' || row[1] === undefined || row[1] === 'not provided') {
-        console.error('❌❌❌ SANITY_CHECK_FAILED: Phone number is BLANK!');
+      // Check 1: Phone must not be blank (use finalPhoneForSheet which is already validated)
+      if (!finalPhoneForSheet || finalPhoneForSheet === '' || finalPhoneForSheet === undefined) {
+        console.error('❌❌❌ SANITY_CHECK_FAILED: finalPhoneForSheet is BLANK!');
         console.error('❌ Raw order.customerPhone:', order.customerPhone);
         row[1] = 'Unknown'; // Fallback to prevent blank
+      } else {
+        // Ensure row uses the validated phone
+        row[1] = finalPhoneForSheet;
       }
       
       // Check 2: Order details must not be blank
