@@ -373,7 +373,7 @@ CRITICAL RULES (MANDATORY - DO NOT SKIP):
 - After calling set_address → You MUST confirm the address back to customer
 - After calling set_customer_name → You MUST confirm the name back to customer
 - SIZE REQUIREMENT: If customer orders an item with multiple sizes (shown in menu as "sizes: small, medium, large") but doesn't specify size, you MUST ask "What size would you like?" BEFORE calling add_item_to_order. DO NOT call add_item_to_order without a size if the menu shows multiple sizes for that item.
-- ITEM DESCRIPTIONS: If customer asks "what is [item]?" or "tell me about [item]" or "what's [item]?" or "what does [item] come with?", you MUST use the EXACT description from the menu (shown after the item name with a dash). Read the description word-for-word from the menu - do NOT make up information or guess.
+- ITEM DESCRIPTIONS: If customer asks "what is [item]?", "tell me about [item]", "what's [item]?", "what comes on [item]?", or "what does [item] come with?" → You MUST call get_item_description tool IMMEDIATELY. Do NOT answer from memory or guess. Use ONLY the description returned by the tool. If you don't call the tool, you will give wrong information.
 
 CONFIRM PHRASES: "Got it.", "Perfect.", "Sure thing."`;
 }
@@ -408,6 +408,156 @@ function getMenuItemsOnDemand(menu, searchTerm = null) {
   }
   
   return items.length > 0 ? items.join('\n') : '';
+}
+
+/**
+ * MENU DESCRIPTION LOOKUP - For "what is [item]?" questions
+ * Returns ONLY the Column E description, nothing else
+ * @param {Object} menu - The parsed menu object
+ * @param {string} query - The user's query (e.g., "luna pizza", "cheese pizza")
+ * @returns {Object} { matched: boolean, itemName: string, description: string, alternatives: string[] }
+ */
+function lookupMenuItemDescription(menu, query) {
+  if (!menu || !query) {
+    return { matched: false, itemName: null, description: null, alternatives: [] };
+  }
+  
+  // Normalize the query
+  const normalizedQuery = query.toLowerCase()
+    .replace(/[^\w\s]/g, '') // Remove punctuation
+    .replace(/\s+/g, ' ')    // Normalize spaces
+    .trim();
+  
+  // Common synonyms
+  const synonyms = {
+    'cheese pie': 'cheese pizza',
+    'plain pie': 'cheese pizza',
+    'plain pizza': 'cheese pizza',
+    'pepperoni pie': 'pepperoni pizza',
+    'pep pizza': 'pepperoni pizza',
+    'buff chicken': 'buffalo chicken pizza',
+    'buffalo': 'buffalo chicken pizza',
+  };
+  
+  // Apply synonyms if applicable
+  let searchQuery = synonyms[normalizedQuery] || normalizedQuery;
+  
+  // Try to find exact match first
+  let exactMatch = null;
+  let partialMatches = [];
+  
+  for (const [itemName, itemData] of Object.entries(menu)) {
+    const normalizedItemName = itemName.toLowerCase()
+      .replace(/[^\w\s]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    
+    // Exact match
+    if (normalizedItemName === searchQuery) {
+      exactMatch = { name: itemName, data: itemData };
+      break;
+    }
+    
+    // Partial match - query contains item name or vice versa
+    if (normalizedItemName.includes(searchQuery) || searchQuery.includes(normalizedItemName)) {
+      partialMatches.push({ name: itemName, data: itemData, score: normalizedItemName.length });
+    }
+    
+    // Word-by-word match for multi-word items
+    const queryWords = searchQuery.split(' ');
+    const itemWords = normalizedItemName.split(' ');
+    const matchedWords = queryWords.filter(qw => itemWords.some(iw => iw.includes(qw) || qw.includes(iw)));
+    if (matchedWords.length >= 2 || (matchedWords.length === 1 && queryWords.length === 1)) {
+      const score = matchedWords.length / Math.max(queryWords.length, itemWords.length);
+      if (score > 0.5) {
+        partialMatches.push({ name: itemName, data: itemData, score: score * 100 });
+      }
+    }
+  }
+  
+  // Log the lookup for debugging
+  console.log(`🔍 MENU LOOKUP: query="${query}", normalized="${searchQuery}", exactMatch=${exactMatch?.name || 'NONE'}, partialMatches=${partialMatches.length}`);
+  
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:lookupMenuItemDescription',message:'MENU_DESCRIPTION_LOOKUP',data:{query:query,normalizedQuery:searchQuery,exactMatch:exactMatch?.name||null,partialMatchCount:partialMatches.length,partialMatches:partialMatches.slice(0,5).map(m=>m.name)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'E_lookup'})}).catch(()=>{});
+  // #endregion
+  
+  // Return exact match if found
+  if (exactMatch) {
+    const description = exactMatch.data.description || '';
+    console.log(`✅ EXACT MATCH: "${exactMatch.name}" => Description: "${description.substring(0, 100)}..."`);
+    
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:lookupMenuItemDescription:exactMatch',message:'EXACT_MATCH_FOUND',data:{itemName:exactMatch.name,hasDescription:!!description,descriptionPreview:description.substring(0,150)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'E_lookup'})}).catch(()=>{});
+    // #endregion
+    
+    return {
+      matched: true,
+      itemName: exactMatch.name,
+      description: description || 'No description available for this item.',
+      alternatives: []
+    };
+  }
+  
+  // Sort partial matches by score and return best match or alternatives
+  partialMatches.sort((a, b) => b.score - a.score);
+  
+  // If we have a clear best match (significantly better than others)
+  if (partialMatches.length === 1 || (partialMatches.length > 1 && partialMatches[0].score > partialMatches[1].score * 1.5)) {
+    const bestMatch = partialMatches[0];
+    const description = bestMatch.data.description || '';
+    console.log(`✅ BEST MATCH: "${bestMatch.name}" => Description: "${description.substring(0, 100)}..."`);
+    
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:lookupMenuItemDescription:bestMatch',message:'BEST_MATCH_FOUND',data:{itemName:bestMatch.name,hasDescription:!!description,descriptionPreview:description.substring(0,150),score:bestMatch.score},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'E_lookup'})}).catch(()=>{});
+    // #endregion
+    
+    return {
+      matched: true,
+      itemName: bestMatch.name,
+      description: description || 'No description available for this item.',
+      alternatives: []
+    };
+  }
+  
+  // Multiple similar matches - return alternatives
+  if (partialMatches.length > 1) {
+    const alternatives = partialMatches.slice(0, 3).map(m => m.name);
+    console.log(`⚠️ MULTIPLE MATCHES: ${alternatives.join(', ')}`);
+    
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:lookupMenuItemDescription:multipleMatches',message:'MULTIPLE_MATCHES',data:{alternatives:alternatives},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'E_lookup'})}).catch(()=>{});
+    // #endregion
+    
+    return {
+      matched: false,
+      itemName: null,
+      description: null,
+      alternatives: alternatives
+    };
+  }
+  
+  // No match found - find closest items for suggestions
+  const allItems = Object.keys(menu);
+  const suggestions = allItems
+    .filter(item => {
+      const itemLower = item.toLowerCase();
+      return searchQuery.split(' ').some(word => word.length > 2 && itemLower.includes(word));
+    })
+    .slice(0, 3);
+  
+  console.log(`❌ NO MATCH for "${query}". Suggestions: ${suggestions.join(', ') || 'NONE'}`);
+  
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:lookupMenuItemDescription:noMatch',message:'NO_MATCH_FOUND',data:{query:query,suggestions:suggestions},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'E_lookup'})}).catch(()=>{});
+  // #endregion
+  
+  return {
+    matched: false,
+    itemName: null,
+    description: null,
+    alternatives: suggestions
+  };
 }
 
 /**
@@ -2302,6 +2452,21 @@ wss.on('connection', (ws, req) => {
                 type: 'object',
                 properties: {}
               }
+            },
+            {
+              type: 'function',
+              name: 'get_item_description',
+              description: 'MANDATORY: Call this tool IMMEDIATELY when customer asks "what is [item]?", "what comes on [item]?", "tell me about [item]", "what\'s in [item]?", or any question about what a menu item is or contains. You MUST call this tool to get the description - do NOT make up or guess descriptions. Only use the description returned by this tool.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  item_name: {
+                    type: 'string',
+                    description: 'The menu item name the customer is asking about (e.g., "cheese pizza", "luna pizza", "buffalo chicken pizza")'
+                  }
+                },
+                required: ['item_name']
+              }
             }
           ],
           tool_choice: 'auto', // Encourage the AI to call tools when appropriate
@@ -2993,19 +3158,71 @@ wss.on('connection', (ws, req) => {
               // #region agent log
               // DEBUG: Detect "what is" questions about menu items
               const lowerTranscript = data.transcript.toLowerCase();
-              if (lowerTranscript.includes('what is') || lowerTranscript.includes('what\'s') || lowerTranscript.includes('tell me about') || lowerTranscript.includes('what does')) {
-                // Try to find which item they're asking about
-                const menuItems = Object.keys(menu);
-                let matchedItem = null;
-                let matchedDesc = null;
-                for (const itemName of menuItems) {
-                  if (lowerTranscript.includes(itemName.toLowerCase())) {
-                    matchedItem = itemName;
-                    matchedDesc = menu[itemName]?.description || 'NO_DESCRIPTION_FOUND';
-                    break;
-                  }
+              const isDescriptionQuestion = lowerTranscript.includes('what is') || 
+                                           lowerTranscript.includes('what\'s') || 
+                                           lowerTranscript.includes('tell me about') || 
+                                           lowerTranscript.includes('what does') ||
+                                           lowerTranscript.includes('what comes on') ||
+                                           lowerTranscript.includes('what\'s in') ||
+                                           lowerTranscript.includes('what kind of');
+              
+              if (isDescriptionQuestion) {
+                console.log('🔍 DESCRIPTION QUESTION DETECTED:', data.transcript);
+                
+                // Extract the item name from the question
+                let itemQuery = lowerTranscript
+                  .replace(/what is (the )?/gi, '')
+                  .replace(/what's (the )?/gi, '')
+                  .replace(/tell me about (the )?/gi, '')
+                  .replace(/what does (the )?/gi, '')
+                  .replace(/what comes on (the )?/gi, '')
+                  .replace(/what's in (the )?/gi, '')
+                  .replace(/what kind of/gi, '')
+                  .replace(/\?/g, '')
+                  .trim();
+                
+                console.log('🔍 Extracted item query:', itemQuery);
+                
+                // GUARDRAIL: Proactively look up the description and inject it into AI context
+                const lookupResult = lookupMenuItemDescription(menu, itemQuery);
+                
+                fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:description_guardrail',message:'DESCRIPTION_GUARDRAIL_TRIGGERED',data:{transcript:data.transcript,extractedQuery:itemQuery,lookupMatched:lookupResult.matched,itemName:lookupResult.itemName,descriptionPreview:lookupResult.description?.substring(0,150)||'NONE',alternatives:lookupResult.alternatives},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'G_guardrail'})}).catch(()=>{});
+                
+                // Build guardrail instruction
+                let guardrailInstruction;
+                if (lookupResult.matched && lookupResult.description) {
+                  guardrailInstruction = `CRITICAL GUARDRAIL - DESCRIPTION QUESTION DETECTED:
+The customer asked about "${itemQuery}".
+
+MATCHED ITEM: "${lookupResult.itemName}"
+EXACT DESCRIPTION FROM MENU (Column E): "${lookupResult.description}"
+
+YOU MUST respond using ONLY this description. Do NOT add any information not listed above. Do NOT make up ingredients, toppings, or details. Say something like: "The ${lookupResult.itemName}? ${lookupResult.description}"`;
+                } else if (lookupResult.alternatives.length > 0) {
+                  guardrailInstruction = `CRITICAL GUARDRAIL - DESCRIPTION QUESTION DETECTED:
+The customer asked about "${itemQuery}" but this item is NOT on the menu.
+
+CLOSEST MATCHES: ${lookupResult.alternatives.join(', ')}
+
+You MUST ask for clarification: "I don't see that exact item on our menu. Did you mean the ${lookupResult.alternatives[0]}?"
+Do NOT make up a description for an item that doesn't exist.`;
+                } else {
+                  guardrailInstruction = `CRITICAL GUARDRAIL - DESCRIPTION QUESTION DETECTED:
+The customer asked about "${itemQuery}" but this item is NOT on the menu.
+
+Respond: "I don't see that item on our menu. Would you like me to tell you about something else?"
+Do NOT make up a description.`;
                 }
-                fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:what_is_question',message:'USER_ASKED_WHAT_IS',data:{transcript:data.transcript,matchedItem:matchedItem,matchedDescription:matchedDesc,menuItemCount:menuItems.length},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'C_description'})}).catch(()=>{});
+                
+                // Inject the description into the AI's context
+                safeSendToOpenAI({
+                  type: 'session.update',
+                  session: {
+                    instructions: guardrailInstruction
+                  }
+                }, 'description guardrail injection');
+                
+                console.log('✅ Description guardrail injected');
               }
               // #endregion
               
@@ -3784,6 +4001,56 @@ wss.on('connection', (ws, req) => {
                     // #endregion
                     
                     activeOrders.set(streamSid, currentOrder);
+                    break;
+                    
+                  case 'get_item_description':
+                    // CRITICAL: Handle menu item description lookup
+                    // This tool MUST be called when customer asks "what is [item]?"
+                    const itemQuery = toolCall.input?.item_name || toolCall.arguments?.item_name;
+                    if (itemQuery) {
+                      console.log(`🔍 GET_ITEM_DESCRIPTION called for: "${itemQuery}"`);
+                      
+                      // Perform the lookup
+                      const lookupResult = lookupMenuItemDescription(menu, itemQuery);
+                      
+                      // #region agent log
+                      fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:get_item_description',message:'DESCRIPTION_TOOL_CALLED',data:{itemQuery:itemQuery,matched:lookupResult.matched,itemName:lookupResult.itemName,hasDescription:!!lookupResult.description,descriptionPreview:lookupResult.description?.substring(0,150)||'NONE',alternatives:lookupResult.alternatives},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'F_tool_call'})}).catch(()=>{});
+                      // #endregion
+                      
+                      // Build the response for the AI
+                      let descriptionResponse;
+                      if (lookupResult.matched) {
+                        // Return ONLY the description from Column E
+                        descriptionResponse = `ITEM FOUND: "${lookupResult.itemName}"\nDESCRIPTION (use this EXACTLY): ${lookupResult.description}`;
+                        console.log(`✅ Description found for "${lookupResult.itemName}": ${lookupResult.description.substring(0, 100)}...`);
+                      } else if (lookupResult.alternatives.length > 0) {
+                        // Multiple matches or suggestions - ask for clarification
+                        descriptionResponse = `ITEM NOT FOUND: "${itemQuery}" is not on the menu.\nDid you mean one of these? ${lookupResult.alternatives.join(', ')}.\nASK THE CUSTOMER: "I don't see that exact item. Did you mean ${lookupResult.alternatives[0]}?"`;
+                        console.log(`⚠️ No exact match for "${itemQuery}". Alternatives: ${lookupResult.alternatives.join(', ')}`);
+                      } else {
+                        // No match at all
+                        descriptionResponse = `ITEM NOT FOUND: "${itemQuery}" is not on the menu.\nTell the customer: "I don't see that item on our menu. Can I help you with something else?"`;
+                        console.log(`❌ No match found for "${itemQuery}"`);
+                      }
+                      
+                      // Send the result back to the AI with instructions to use it
+                      safeSendToOpenAI({
+                        type: 'session.update',
+                        session: {
+                          instructions: `CRITICAL: The customer asked about "${itemQuery}". Here is the ONLY information you may use:\n\n${descriptionResponse}\n\nYou MUST use the description provided above word-for-word. Do NOT add any information not in this description. Do NOT make up ingredients or details.`
+                        }
+                      }, 'description lookup result');
+                      
+                      // Trigger a response
+                      setTimeout(() => {
+                        safeSendToOpenAI({
+                          type: 'response.create',
+                          response: {
+                            modalities: ['text']
+                          }
+                        }, 'description response');
+                      }, 100);
+                    }
                     
                     // CRITICAL: Log order immediately when confirmed (get fresh order state first)
                     // Use delay to ensure ALL tool calls (name, delivery method) are processed
