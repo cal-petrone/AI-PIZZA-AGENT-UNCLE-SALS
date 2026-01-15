@@ -913,9 +913,10 @@ async function fetchMenuFromGoogleSheets() {
     }
     
     // Fetch Wing_Options sheet (flavors, piece counts, dressings, extras)
+    // This is a TAB inside the same Google Sheet as Menu Items
     try {
-      const wingOptionsRange = `'${wingOptionsSheetName}'!A2:E100`;
-      console.log(`📋 Fetching wing options: ${wingOptionsRange}`);
+      const wingOptionsRange = `'${wingOptionsSheetName}'!A2:I100`; // Extended to column I for all wing data
+      console.log(`📋 Fetching wing options from same sheet: ${wingOptionsRange}`);
       const wingOptionsResponse = await sheets.spreadsheets.values.get({
         spreadsheetId: menuSheetId,
         range: wingOptionsRange,
@@ -1219,8 +1220,14 @@ function parseSizeGuideFromSheets(rows) {
 
 /**
  * Parse wing options from Wing_Options sheet
- * Format: A=Option Type, B=Option Name, C=Price, D=Notes, E=Available
- * Option Types: "Flavor", "Piece Count", "Dressing", "Extra"
+ * User's actual format:
+ * A=Wing Type, B=Piece Count, C=Base Price, D=Flavor Option, E=Flavor Type, F=Flavor Upcharge, G=Dressing Option, H=Dressing, I=Extra Option
+ * 
+ * We extract:
+ * - Flavors from Column D (e.g., "Plain", "Mild", "Hot", "BBQ", etc.)
+ * - Piece counts from Column B (e.g., "6 Pieces", "10 Pieces")
+ * - Dressings from Column G/H (e.g., "Ranch Dressing", "Blue Cheese Dressing")
+ * - Extras from Column I
  */
 function parseWingOptionsFromSheets(rows) {
   const wingOptions = {
@@ -1230,44 +1237,69 @@ function parseWingOptionsFromSheets(rows) {
     extras: []
   };
   
+  const seenFlavors = new Set();
+  const seenPieceCounts = new Set();
+  const seenDressings = new Set();
+  const seenExtras = new Set();
+  
   rows.forEach((row, index) => {
-    if (!row || row.length < 2) return;
+    if (!row || row.length < 1) return;
     
-    const optionType = (row[0] || '').toString().trim().toLowerCase();
-    const optionName = (row[1] || '').toString().trim();
-    let priceStr = (row[2] || '').toString().trim();
-    const notes = (row[3] || '').toString().trim();
-    const available = (row[4] || 'YES').toString().trim().toUpperCase();
+    // Column D: Flavor Option (e.g., "Plain", "Mild", "Hot", "BBQ")
+    const flavorName = (row[3] || '').toString().trim();
+    if (flavorName && !seenFlavors.has(flavorName.toLowerCase())) {
+      seenFlavors.add(flavorName.toLowerCase());
+      // Column F: Flavor Upcharge price
+      let flavorPrice = (row[5] || '').toString().trim().replace(/^\$/, '');
+      wingOptions.flavors.push({
+        name: flavorName,
+        price: parseFloat(flavorPrice) || 0,
+        notes: (row[4] || '').toString().trim() // Column E: Flavor Type (e.g., "Sauce")
+      });
+    }
     
-    if (!optionType || !optionName) return;
-    if (available !== 'YES') return; // Skip unavailable options
+    // Column B: Piece Count (e.g., "6 Pieces", "10 Pieces")
+    const pieceCount = (row[1] || '').toString().trim();
+    if (pieceCount && !seenPieceCounts.has(pieceCount.toLowerCase())) {
+      seenPieceCounts.add(pieceCount.toLowerCase());
+      // Column C: Base Price
+      let basePrice = (row[2] || '').toString().trim().replace(/^\$/, '');
+      wingOptions.pieceCounts.push({
+        name: pieceCount,
+        price: parseFloat(basePrice) || 0,
+        notes: ''
+      });
+    }
     
-    // Parse price
-    priceStr = priceStr.replace(/^\$/, '');
-    const price = parseFloat(priceStr) || 0;
+    // Column G/H: Dressing Option
+    const dressingOption = (row[6] || '').toString().trim();
+    const dressingName = (row[7] || '').toString().trim();
+    if (dressingName && !seenDressings.has(dressingName.toLowerCase())) {
+      seenDressings.add(dressingName.toLowerCase());
+      wingOptions.dressings.push({
+        name: dressingName,
+        price: 0,
+        notes: ''
+      });
+    }
     
-    const option = {
-      name: optionName,
-      price: price,
-      notes: notes
-    };
-    
-    // Categorize by type
-    if (optionType.includes('flavor')) {
-      wingOptions.flavors.push(option);
-    } else if (optionType.includes('piece') || optionType.includes('count') || optionType.includes('quantity')) {
-      wingOptions.pieceCounts.push(option);
-    } else if (optionType.includes('dressing') || optionType.includes('sauce') || optionType.includes('dip')) {
-      wingOptions.dressings.push(option);
-    } else if (optionType.includes('extra') || optionType.includes('add')) {
-      wingOptions.extras.push(option);
+    // Column I: Extra Option
+    const extraOption = (row[8] || '').toString().trim();
+    if (extraOption && !seenExtras.has(extraOption.toLowerCase())) {
+      seenExtras.add(extraOption.toLowerCase());
+      wingOptions.extras.push({
+        name: extraOption,
+        price: 0,
+        notes: ''
+      });
     }
   });
   
   console.log(`🍗 Parsed wing options: ${wingOptions.flavors.length} flavors, ${wingOptions.pieceCounts.length} piece counts, ${wingOptions.dressings.length} dressings, ${wingOptions.extras.length} extras`);
+  console.log(`🍗 Available flavors: ${wingOptions.flavors.map(f => f.name).join(', ')}`);
   
   // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:parseWingOptionsFromSheets',message:'WING_OPTIONS_PARSED',data:{flavorCount:wingOptions.flavors.length,flavors:wingOptions.flavors.map(f=>f.name),pieceCountCount:wingOptions.pieceCounts.length,dressingCount:wingOptions.dressings.length},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'I_wings'})}).catch(()=>{});
+  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:parseWingOptionsFromSheets',message:'WING_OPTIONS_PARSED',data:{flavorCount:wingOptions.flavors.length,flavors:wingOptions.flavors.map(f=>f.name),pieceCountCount:wingOptions.pieceCounts.length,pieceCounts:wingOptions.pieceCounts.map(p=>p.name),dressingCount:wingOptions.dressings.length,dressings:wingOptions.dressings.map(d=>d.name)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'I_wings'})}).catch(()=>{});
   // #endregion
   
   return wingOptions;
