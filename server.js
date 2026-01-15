@@ -645,6 +645,12 @@ async function fetchMenuFromGoogleSheets() {
         const credentialsJson = Buffer.from(cleanedBase64, 'base64').toString('utf-8');
         const credentials = JSON.parse(credentialsJson);
         
+        // Store service account email for error messages
+        const serviceAccountEmail = credentials.client_email;
+        if (serviceAccountEmail) {
+          console.log('📧 Service Account Email:', serviceAccountEmail);
+        }
+        
         auth = new google.auth.GoogleAuth({
           credentials: credentials,
           scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
@@ -726,6 +732,42 @@ async function fetchMenuFromGoogleSheets() {
 
   } catch (error) {
     console.error('❌ Error fetching menu from Google Sheets:', error.message);
+    console.error('❌ Error code:', error.code);
+    console.error('❌ Error details:', error.response?.data || error.message);
+    
+    // Extract service account email from credentials if available
+    let serviceAccountEmail = null;
+    try {
+      if (auth && auth.credentials && auth.credentials.client_email) {
+        serviceAccountEmail = auth.credentials.client_email;
+      } else if (process.env.GOOGLE_SHEETS_CREDENTIALS_BASE64) {
+        const cleanedBase64 = process.env.GOOGLE_SHEETS_CREDENTIALS_BASE64.replace(/\s/g, '');
+        const credentialsJson = Buffer.from(cleanedBase64, 'base64').toString('utf-8');
+        const credentials = JSON.parse(credentialsJson);
+        serviceAccountEmail = credentials.client_email;
+      }
+    } catch (e) {
+      // Ignore errors extracting email
+    }
+    
+    if (serviceAccountEmail) {
+      console.error('');
+      console.error('📧 ============================================');
+      console.error('📧 ACTION REQUIRED: Share your Google Sheet!');
+      console.error('📧 ============================================');
+      console.error('📧 Service Account Email:', serviceAccountEmail);
+      console.error('📧 Sheet ID:', menuSheetId);
+      console.error('📧 Sheet Name:', sheetName);
+      console.error('📧 Steps:');
+      console.error('   1. Open your Google Sheet:', `https://docs.google.com/spreadsheets/d/${menuSheetId}/edit`);
+      console.error('   2. Click "Share" button (top right)');
+      console.error('   3. Paste this email:', serviceAccountEmail);
+      console.error('   4. Give it "Viewer" access (read-only is fine)');
+      console.error('   5. Click "Send"');
+      console.error('📧 ============================================');
+      console.error('');
+    }
+    
     console.error('❌ Using default menu as fallback');
     return getDefaultMenuData();
   }
