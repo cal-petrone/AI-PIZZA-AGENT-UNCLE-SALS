@@ -2974,34 +2974,92 @@ wss.on('connection', (ws, req) => {
                       return; // Exit early - don't add item
                     }
                     
-                    // Check for wing items needing flavor
+                    // Check for wing items
                     const itemNameLower2 = itemName.toLowerCase();
                     const isWingsItem2 = itemNameLower2.includes('wing');
                     const flavor2 = toolInput.flavor;
                     const modifiers2 = toolInput.modifiers;
                     const dressing2 = toolInput.dressing;
                     
+                    // ============================================================
+                    // WING PARSING (backup handler) - same logic as main handler
+                    // ============================================================
+                    let finalQuantity2 = quantity;
+                    let pieceCount2 = null;
+                    let wingPrice2 = itemPrice;
+                    
+                    if (isWingsItem2) {
+                      console.log('🍗🍗🍗 WING ORDER (backup handler) - Parsing pieceCount vs quantity');
+                      console.log(`🍗 RAW: name=${name}, size=${size}, quantity=${quantity}`);
+                      
+                      // Get valid piece counts
+                      const validPieceCounts2 = menuCache?.wingOptions?.pieceCounts || [];
+                      const validCountNumbers2 = validPieceCounts2.map(pc => {
+                        const match = pc.name.match(/(\d+)/);
+                        return match ? parseInt(match[1]) : null;
+                      }).filter(n => n !== null);
+                      const allowedCounts2 = validCountNumbers2.length > 0 ? validCountNumbers2 : [6, 10, 20, 30, 50];
+                      
+                      // Extract pieceCount from size
+                      if (size) {
+                        const sizeMatch2 = String(size).match(/(\d+)/);
+                        if (sizeMatch2) {
+                          pieceCount2 = parseInt(sizeMatch2[1]);
+                        }
+                      }
+                      
+                      // If quantity looks like piece count, fix it
+                      if (!pieceCount2 && allowedCounts2.includes(quantity)) {
+                        pieceCount2 = quantity;
+                        finalQuantity2 = 1;
+                        console.log(`🍗 CORRECTED: quantity ${quantity} was pieceCount! Set quantity=1, pieceCount=${pieceCount2}`);
+                      }
+                      
+                      if (!pieceCount2 && quantity > 5) {
+                        pieceCount2 = quantity;
+                        finalQuantity2 = 1;
+                      }
+                      
+                      if (!pieceCount2) pieceCount2 = 10;
+                      
+                      // Lookup price from Wing_Options
+                      const matchingOption2 = validPieceCounts2.find(pc => pc.name.includes(String(pieceCount2)));
+                      if (matchingOption2 && matchingOption2.price > 0) {
+                        wingPrice2 = matchingOption2.price;
+                      }
+                      
+                      console.log(`🍗 FINAL: quantity=${finalQuantity2}, pieceCount=${pieceCount2}, price=$${wingPrice2}`);
+                    }
+                    
                     // Check if item already exists to prevent duplicates
                     try {
                       const existingItemIndex = currentOrder.items.findIndex(
                         item => item && item.name && item.name.toLowerCase() === itemName.toLowerCase() && 
-                                (item.size || 'regular') === (size || 'regular') &&
+                                (item.pieceCount || 'regular') === (pieceCount2 || 'regular') &&
                                 (!isWingsItem2 || item.flavor === flavor2)
                       );
                       
                       if (existingItemIndex >= 0 && !isWingsItem2) {
                         // Update quantity if item already exists (non-wings)
-                        currentOrder.items[existingItemIndex].quantity += quantity;
-                        console.log(`✅ Updated item quantity: ${currentOrder.items[existingItemIndex].quantity}x ${size || 'regular'} ${itemName}`);
+                        currentOrder.items[existingItemIndex].quantity += finalQuantity2;
+                        console.log(`✅ Updated item quantity: ${currentOrder.items[existingItemIndex].quantity}x ${itemName}`);
                       } else {
-                        // Add new item with flavor, dressing, and modifiers
+                        // Add new item with proper wing parsing
                         const newItem2 = {
                           name: itemName,
-                          size: size || 'regular',
-                          quantity: quantity,
-                          price: itemPrice,
+                          size: isWingsItem2 ? 'regular' : (size || 'regular'),
+                          quantity: finalQuantity2,
+                          price: isWingsItem2 ? wingPrice2 : itemPrice,
                           category: menuItemData?.category || 'other'
                         };
+                        
+                        // For wings, add pieceCount and wingType
+                        if (isWingsItem2 && pieceCount2) {
+                          newItem2.pieceCount = pieceCount2;
+                          newItem2.itemType = 'wings';
+                          newItem2.wingType = 'Regular Wings';
+                        }
+                        
                         if (flavor2) newItem2.flavor = flavor2;
                         if (dressing2) newItem2.dressing = dressing2;
                         if (modifiers2) newItem2.modifiers = modifiers2;
@@ -3011,9 +3069,9 @@ wss.on('connection', (ws, req) => {
                         // DEBUG: Log complete item structure
                         console.log('📦 ITEM_ADDED_FULL (backup handler):', JSON.stringify(newItem2, null, 2));
                         
-                        const flavorStr2 = flavor2 ? ` (${flavor2})` : '';
-                        const dressingStr2 = dressing2 ? `, ${dressing2}` : '';
-                        console.log(`✅ Added item to order: ${quantity}x ${size || 'regular'} ${itemName}${flavorStr2}${dressingStr2} - $${itemPrice}`);
+                        const pieceStr2 = pieceCount2 ? ` (${pieceCount2} pieces)` : '';
+                        const flavorStr2 = flavor2 ? ` ${flavor2}` : '';
+                        console.log(`✅ Added: ${finalQuantity2}x ${itemName}${pieceStr2}${flavorStr2} - $${isWingsItem2 ? wingPrice2 : itemPrice}`);
                       }
                       
                       // CRITICAL: Update order in map immediately
@@ -3811,48 +3869,70 @@ wss.on('connection', (ws, req) => {
                       const { flavor, modifiers } = toolInput;
                       
                       // ============================================================
-                      // WING PIECE COUNT VALIDATION - Only allow valid counts
+                      // WING ORDER PARSING - pieceCount vs quantity
+                      // CRITICAL: "10-piece wings" = quantity:1, pieceCount:10
+                      //           NOT quantity:10!
                       // ============================================================
+                      let finalQuantity = quantity;
+                      let pieceCount = null;
+                      let wingPrice = itemPrice;
+                      
                       if (isWingsItem) {
+                        console.log('🍗🍗🍗 WING ORDER DETECTED - Parsing pieceCount vs quantity');
+                        console.log(`🍗 RAW INPUT: name=${name}, size=${size}, quantity=${quantity}`);
+                        
                         // Get valid piece counts from Wing_Options sheet
                         const validPieceCounts = menuCache?.wingOptions?.pieceCounts || [];
-                        const validCountNumbers = validPieceCounts.map(pc => {
+                        const allowedCounts = validPieceCounts.map(pc => {
                           const match = pc.name.match(/(\d+)/);
                           return match ? parseInt(match[1]) : null;
                         }).filter(n => n !== null);
                         
                         // Default valid counts if Wing_Options not loaded
-                        const allowedCounts = validCountNumbers.length > 0 ? validCountNumbers : [6, 10, 20, 30, 50];
+                        const validCountNumbers = allowedCounts.length > 0 ? allowedCounts : [6, 10, 20, 30, 50];
                         
-                        // Extract piece count from size parameter or quantity
-                        let requestedPieceCount = null;
-                        
-                        // Check size parameter for piece count (e.g., "12-piece", "12 piece", "12")
+                        // CRITICAL: Extract pieceCount from size parameter
+                        // "10-piece", "10 pieces", "10" in size field => pieceCount = 10
                         if (size) {
                           const sizeMatch = String(size).match(/(\d+)/);
                           if (sizeMatch) {
-                            requestedPieceCount = parseInt(sizeMatch[1]);
+                            pieceCount = parseInt(sizeMatch[1]);
+                            console.log(`🍗 Extracted pieceCount from size: ${pieceCount}`);
                           }
                         }
                         
-                        // Also check if quantity looks like a piece count (>5)
-                        if (!requestedPieceCount && quantity > 5) {
-                          requestedPieceCount = quantity;
+                        // CRITICAL: If quantity looks like a piece count (6, 10, 20, 30, 50), 
+                        // it was likely misinterpreted - fix it!
+                        if (!pieceCount && validCountNumbers.includes(quantity)) {
+                          pieceCount = quantity;
+                          finalQuantity = 1; // Reset to 1 order
+                          console.log(`🍗 CORRECTED: quantity ${quantity} was actually pieceCount! Set quantity=1, pieceCount=${pieceCount}`);
                         }
                         
-                        console.log(`🍗 Wing order validation: requested=${requestedPieceCount}, allowed=${allowedCounts.join(',')}`);
+                        // If still no piece count, but quantity > 5, assume it's piece count
+                        if (!pieceCount && quantity > 5) {
+                          pieceCount = quantity;
+                          finalQuantity = 1;
+                          console.log(`🍗 INFERRED: quantity ${quantity} looks like pieceCount. Set quantity=1, pieceCount=${pieceCount}`);
+                        }
+                        
+                        // Default pieceCount if not specified
+                        if (!pieceCount) {
+                          pieceCount = 10; // Default to 10-piece if not specified
+                          console.log(`🍗 No pieceCount specified - defaulting to ${pieceCount}`);
+                        }
+                        
+                        console.log(`🍗 FINAL PARSE: quantity=${finalQuantity}, pieceCount=${pieceCount}`);
                         
                         // Validate piece count
-                        if (requestedPieceCount && !allowedCounts.includes(requestedPieceCount)) {
-                          console.log(`🍗❌ INVALID PIECE COUNT: ${requestedPieceCount} - REJECTING ORDER`);
-                          
-                          const validOptions = allowedCounts.join(', ');
+                        if (!validCountNumbers.includes(pieceCount)) {
+                          console.log(`🍗❌ INVALID PIECE COUNT: ${pieceCount} - REJECTING ORDER`);
+                          const validOptions = validCountNumbers.join(', ');
                           
                           // #region agent log
-                          fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:wing_piece_validation',message:'INVALID_WING_PIECE_COUNT',data:{requestedPieceCount,allowedCounts,itemName},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'L_wing_validation'})}).catch(()=>{});
+                          fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:wing_piece_validation',message:'INVALID_WING_PIECE_COUNT',data:{pieceCount,allowedCounts:validCountNumbers,itemName,rawQuantity:quantity,rawSize:size},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'N_wing_parsing'})}).catch(()=>{});
                           // #endregion
                           
-                          // Cancel any response and send correction
                           safeSendToOpenAI({
                             type: 'response.cancel'
                           }, 'cancel response for invalid wing count');
@@ -3861,12 +3941,25 @@ wss.on('connection', (ws, req) => {
                             type: 'response.create',
                             response: {
                               modalities: ['audio', 'text'],
-                              instructions: `YOU MUST SAY EXACTLY THIS: "We don't have ${requestedPieceCount}-piece wings. We have ${validOptions} pieces. Which would you like?"\n\nDo NOT proceed with the order until customer gives a valid piece count.`
+                              instructions: `YOU MUST SAY EXACTLY THIS: "We don't have ${pieceCount}-piece wings. We have ${validOptions} pieces. Which would you like?"\n\nDo NOT proceed until customer gives a valid piece count.`
                             }
                           }, 'wing piece count correction');
                           
-                          break; // Don't add wings with invalid piece count
+                          break;
                         }
+                        
+                        // CRITICAL: Look up price from Wing_Options by pieceCount
+                        const matchingPieceOption = validPieceCounts.find(pc => pc.name.includes(String(pieceCount)));
+                        if (matchingPieceOption && matchingPieceOption.price > 0) {
+                          wingPrice = matchingPieceOption.price;
+                          console.log(`🍗 Found wing price from Wing_Options: ${pieceCount}-piece = $${wingPrice}`);
+                        } else {
+                          console.log(`🍗 Wing price not found in Wing_Options for ${pieceCount}-piece, using menu price: $${itemPrice}`);
+                        }
+                        
+                        // #region agent log
+                        fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:wing_parsing_complete',message:'WING_ORDER_PARSED',data:{rawQuantity:quantity,rawSize:size,finalQuantity,pieceCount,wingPrice,itemName},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'N_wing_parsing'})}).catch(()=>{});
+                        // #endregion
                       }
                       
                       // ============================================================
@@ -3875,24 +3968,22 @@ wss.on('connection', (ws, req) => {
                       if (isWingsItem && !flavor) {
                         console.log(`🍗 Wings item "${itemName}" ordered without flavor - must ask for flavor!`);
                         
-                        // Get available flavors from wingOptions
                         const availableFlavors = menuCache?.wingOptions?.flavors || [];
                         let flavorList = availableFlavors.length > 0 
                           ? availableFlavors.map(f => f.name).join(', ')
                           : 'hot, mild, BBQ, garlic parmesan, buffalo';
                         
                         // #region agent log
-                        fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:wing_flavor_check',message:'WINGS_NO_FLAVOR',data:{itemName,availableFlavorsCount:availableFlavors.length,flavorList},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'I_wings'})}).catch(()=>{});
+                        fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:wing_flavor_check',message:'WINGS_NO_FLAVOR',data:{itemName,pieceCount,flavorList},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'I_wings'})}).catch(()=>{});
                         // #endregion
                         
                         safeSendToOpenAI({
                           type: 'session.update',
                           session: {
-                            instructions: `CRITICAL: Customer ordered "${itemName}" but did not specify a wing flavor. Available flavors: ${flavorList}. You MUST ask "What flavor would you like for your wings?" Do NOT add the wings to the order yet - wait for the customer to specify the flavor first.`
+                            instructions: `CRITICAL: Customer ordered "${itemName}" but did not specify a wing flavor. Available flavors: ${flavorList}. You MUST ask "What flavor would you like for your wings?" Do NOT add the wings to the order yet.`
                           }
                         }, 'wing flavor request instruction');
                         
-                        // Trigger a response to ask for flavor
                         setTimeout(() => {
                           safeSendToOpenAI({
                             type: 'response.create',
@@ -3901,7 +3992,7 @@ wss.on('connection', (ws, req) => {
                             }
                           }, 'wing flavor request response');
                         }, 100);
-                        break; // Don't add wings without flavor
+                        break;
                       }
                       
                       // Ensure items array exists
@@ -3918,17 +4009,25 @@ wss.on('connection', (ws, req) => {
                       
                       if (existingItemIndex >= 0 && !isWingsItem) {
                         // Update quantity if item already exists (only for non-wing items)
-                        currentOrder.items[existingItemIndex].quantity += quantity;
+                        currentOrder.items[existingItemIndex].quantity += finalQuantity;
                         console.log(`✅ Updated item quantity: ${currentOrder.items[existingItemIndex].quantity}x ${size || 'regular'} ${itemName}`);
                       } else {
                         // Add new item with ALL details for proper logging
                         const newItem = {
                           name: itemName,
-                          size: size || 'regular',
-                          quantity: quantity,
-                          price: itemPrice,
+                          size: isWingsItem ? 'regular' : (size || 'regular'), // Wings don't use size, they use pieceCount
+                          quantity: finalQuantity, // Use corrected quantity
+                          price: isWingsItem ? wingPrice : itemPrice, // Use wing price for wings
                           category: menuItemData?.category || 'other'
                         };
+                        
+                        // CRITICAL: For wings, store pieceCount separately
+                        if (isWingsItem && pieceCount) {
+                          newItem.pieceCount = pieceCount;
+                          newItem.itemType = 'wings';
+                          newItem.wingType = 'Regular Wings';
+                          console.log(`🍗 Set pieceCount: ${pieceCount}, price: $${wingPrice}`);
+                        }
                         
                         // Add flavor for wings
                         if (flavor) {

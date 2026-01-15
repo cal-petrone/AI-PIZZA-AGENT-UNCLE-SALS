@@ -223,24 +223,34 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
       
       // Format items as string - MUST include ALL details for wings and other items
       // Wings format: "1x Regular Wings (10 pieces, Hot, Blue Cheese)"
+      // CRITICAL: pieceCount is NOT quantity for wings!
       const itemsString = order.items.map(item => {
         const qty = item.quantity || 1;
         const name = item.name || 'Unknown Item';
         
-        // Check if this is a wing item
-        const isWings = name.toLowerCase().includes('wing');
+        // Check if this is a wing item (has pieceCount or itemType='wings' or name contains 'wing')
+        const isWings = item.itemType === 'wings' || item.pieceCount || name.toLowerCase().includes('wing');
         
         if (isWings) {
-          // Wings: include piece count, flavor, dressing, and any modifiers
+          // Wings: MUST show pieceCount, flavor, dressing
+          // Format: "1x Regular Wings (10 pieces, Hot, Blue Cheese)"
           const parts = [];
-          if (item.size) parts.push(`${item.size} pieces`);
+          
+          // CRITICAL: Use pieceCount, NOT size for wings
+          const pieceCount = item.pieceCount || 10; // Default 10 if not set
+          parts.push(`${pieceCount} pieces`);
+          
           if (item.flavor) parts.push(item.flavor);
           if (item.dressing) parts.push(item.dressing);
           if (item.modifiers) parts.push(item.modifiers);
           
-          const wingDetails = parts.length > 0 ? ` (${parts.join(', ')})` : '';
-          console.log(`🍗 WING_FORMAT: ${qty}x ${name}${wingDetails}`);
-          return `${qty}x ${name}${wingDetails}`;
+          const wingDetails = ` (${parts.join(', ')})`;
+          const wingName = item.wingType || 'Regular Wings';
+          
+          console.log(`🍗 WING_FORMAT: qty=${qty}, pieceCount=${pieceCount}, flavor=${item.flavor || 'NONE'}`);
+          console.log(`🍗 FINAL_WING_STRING: ${qty}x ${wingName}${wingDetails}`);
+          
+          return `${qty}x ${wingName}${wingDetails}`;
         } else {
           // Non-wings: size, flavor (if any), modifiers
           const size = item.size && item.size !== 'regular' ? `${item.size} ` : '';
