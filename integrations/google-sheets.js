@@ -488,6 +488,13 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
         console.error('❌ INVALID: Name is just numbers:', cell);
         return true;
       }
+      // Column B (Phone) - MUST NOT be blank
+      if (index === 1 && (!cell || cell === '' || cell === undefined || cell === null)) {
+        console.error('❌❌❌ CRITICAL: Phone number is BLANK in validated row!');
+        console.error('❌ This should never happen - finalPhoneForSheet should prevent this');
+        validatedRow[1] = 'Unknown'; // Force fallback
+        return false; // Don't fail, just fix it
+      }
       // Column C (Delivery Method) - must be "Pickup", "Delivery", or "-"
       if (index === 2 && !['Pickup', 'Delivery', '-'].includes(cell)) {
         console.error('❌ INVALID: Delivery method is not valid:', cell);
