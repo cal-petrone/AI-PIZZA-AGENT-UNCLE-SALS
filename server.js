@@ -3155,8 +3155,7 @@ wss.on('connection', (ws, req) => {
               fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:user_transcript',message:'USER_SAID',data:{transcript:data.transcript,hasName:activeOrders.get(streamSid)?.customerName||'NOT_SET',hasAddress:activeOrders.get(streamSid)?.address||'NOT_SET',deliveryMethod:activeOrders.get(streamSid)?.deliveryMethod||'NOT_SET'},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A_user_input'})}).catch(()=>{});
               // #endregion
               
-              // #region agent log
-              // DEBUG: Detect "what is" questions about menu items
+              // CRITICAL: Detect "what is" questions and handle IMMEDIATELY
               const lowerTranscript = data.transcript.toLowerCase();
               const isDescriptionQuestion = lowerTranscript.includes('what is') || 
                                            lowerTranscript.includes('what\'s') || 
@@ -3164,65 +3163,93 @@ wss.on('connection', (ws, req) => {
                                            lowerTranscript.includes('what does') ||
                                            lowerTranscript.includes('what comes on') ||
                                            lowerTranscript.includes('what\'s in') ||
-                                           lowerTranscript.includes('what kind of');
+                                           lowerTranscript.includes('what kind of') ||
+                                           lowerTranscript.includes('describe');
               
               if (isDescriptionQuestion) {
-                console.log('🔍 DESCRIPTION QUESTION DETECTED:', data.transcript);
+                console.log('🔍🔍🔍 DESCRIPTION QUESTION DETECTED - TAKING CONTROL 🔍🔍🔍');
+                console.log('🔍 User asked:', data.transcript);
                 
-                // Extract the item name from the question
+                // STEP 1: CANCEL any auto-response that OpenAI might be generating
+                safeSendToOpenAI({
+                  type: 'response.cancel'
+                }, 'cancel auto-response for description lookup');
+                console.log('🛑 Cancelled any pending auto-response');
+                
+                // STEP 2: Extract the item name from the question
                 let itemQuery = lowerTranscript
                   .replace(/what is (the )?/gi, '')
                   .replace(/what's (the )?/gi, '')
                   .replace(/tell me about (the )?/gi, '')
-                  .replace(/what does (the )?/gi, '')
+                  .replace(/what does (the )?(.*) (have|come with)/gi, '$2')
                   .replace(/what comes on (the )?/gi, '')
                   .replace(/what's in (the )?/gi, '')
                   .replace(/what kind of/gi, '')
+                  .replace(/describe (the )?/gi, '')
                   .replace(/\?/g, '')
                   .trim();
                 
                 console.log('🔍 Extracted item query:', itemQuery);
                 
-                // GUARDRAIL: Proactively look up the description and inject it into AI context
+                // STEP 3: Look up the description from menu
+                const lookupStartTime = Date.now();
                 const lookupResult = lookupMenuItemDescription(menu, itemQuery);
+                const lookupEndTime = Date.now();
                 
-                fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:description_guardrail',message:'DESCRIPTION_GUARDRAIL_TRIGGERED',data:{transcript:data.transcript,extractedQuery:itemQuery,lookupMatched:lookupResult.matched,itemName:lookupResult.itemName,descriptionPreview:lookupResult.description?.substring(0,150)||'NONE',alternatives:lookupResult.alternatives},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'G_guardrail'})}).catch(()=>{});
+                console.log(`🔍 Lookup completed in ${lookupEndTime - lookupStartTime}ms`);
                 
-                // Build guardrail instruction
-                let guardrailInstruction;
+                // #region agent log
+                fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:description_handler',message:'DESCRIPTION_LOOKUP_COMPLETE',data:{userQuery:data.transcript,normalizedQuery:itemQuery,matched:lookupResult.matched,matchedItem:lookupResult.itemName,category:menu[lookupResult.itemName]?.category||'UNKNOWN',descriptionReturned:lookupResult.description?.substring(0,200)||'NONE',lookupTimeMs:lookupEndTime-lookupStartTime,alternatives:lookupResult.alternatives},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H_immediate_response'})}).catch(()=>{});
+                // #endregion
+                
+                // STEP 4: Build the EXACT response the AI should say
+                let responseText;
+                let isWingsItem = false;
+                
                 if (lookupResult.matched && lookupResult.description) {
-                  guardrailInstruction = `CRITICAL GUARDRAIL - DESCRIPTION QUESTION DETECTED:
-The customer asked about "${itemQuery}".
-
-MATCHED ITEM: "${lookupResult.itemName}"
-EXACT DESCRIPTION FROM MENU (Column E): "${lookupResult.description}"
-
-YOU MUST respond using ONLY this description. Do NOT add any information not listed above. Do NOT make up ingredients, toppings, or details. Say something like: "The ${lookupResult.itemName}? ${lookupResult.description}"`;
+                  const itemData = menu[lookupResult.itemName];
+                  const category = itemData?.category?.toLowerCase() || '';
+                  const itemNameLower = lookupResult.itemName.toLowerCase();
+                  
+                  // Check if this is a wings item
+                  isWingsItem = category.includes('wing') || itemNameLower.includes('wing');
+                  
+                  // Build response with EXACT description from Column E
+                  responseText = `The ${lookupResult.itemName}? ${lookupResult.description}`;
+                  
+                  // Add wings flavor question if applicable
+                  if (isWingsItem) {
+                    responseText += ` What flavor of wings would you like?`;
+                    console.log('🍗 Wings item detected - added flavor question');
+                  }
+                  
+                  console.log(`✅ MATCHED: "${lookupResult.itemName}" => "${lookupResult.description.substring(0, 100)}..."`);
                 } else if (lookupResult.alternatives.length > 0) {
-                  guardrailInstruction = `CRITICAL GUARDRAIL - DESCRIPTION QUESTION DETECTED:
-The customer asked about "${itemQuery}" but this item is NOT on the menu.
-
-CLOSEST MATCHES: ${lookupResult.alternatives.join(', ')}
-
-You MUST ask for clarification: "I don't see that exact item on our menu. Did you mean the ${lookupResult.alternatives[0]}?"
-Do NOT make up a description for an item that doesn't exist.`;
+                  responseText = `I don't see that exact item on our menu. Did you mean the ${lookupResult.alternatives[0]}?`;
+                  console.log(`⚠️ NO EXACT MATCH - Suggesting: ${lookupResult.alternatives.join(', ')}`);
                 } else {
-                  guardrailInstruction = `CRITICAL GUARDRAIL - DESCRIPTION QUESTION DETECTED:
-The customer asked about "${itemQuery}" but this item is NOT on the menu.
-
-Respond: "I don't see that item on our menu. Would you like me to tell you about something else?"
-Do NOT make up a description.`;
+                  responseText = `I don't see that item on our menu. Would you like me to tell you about something else?`;
+                  console.log(`❌ NO MATCH FOUND for "${itemQuery}"`);
                 }
                 
-                // Inject the description into the AI's context
-                safeSendToOpenAI({
-                  type: 'session.update',
-                  session: {
-                    instructions: guardrailInstruction
-                  }
-                }, 'description guardrail injection');
+                // #region agent log
+                fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:description_response',message:'SENDING_DESCRIPTION_RESPONSE',data:{responseText:responseText.substring(0,200),isWingsItem:isWingsItem,wingsFlavorPromptTriggered:isWingsItem},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H_immediate_response'})}).catch(()=>{});
+                // #endregion
                 
-                console.log('✅ Description guardrail injected');
+                // STEP 5: Send the response IMMEDIATELY with the description
+                // Use response.create with instructions that tell AI exactly what to say
+                safeSendToOpenAI({
+                  type: 'response.create',
+                  response: {
+                    modalities: ['audio', 'text'],
+                    instructions: `YOU MUST SAY EXACTLY THIS AND NOTHING ELSE: "${responseText}"\n\nDo NOT add any extra information. Do NOT say "let me check" or "one moment". Say the response above IMMEDIATELY.`
+                  }
+                }, 'immediate description response');
+                
+                console.log('✅ DESCRIPTION RESPONSE SENT IMMEDIATELY');
+                
+                // Mark that we've handled this - don't let other handlers respond
+                responseInProgress = true;
               }
               // #endregion
               
