@@ -354,7 +354,9 @@ CRITICAL TOOL REQUIREMENTS - YOU MUST CALL THESE TOOLS:
 
 ORDER FLOW (follow this EXACT sequence):
 1. Greet: "Thanks for calling Uncle Sal's. What can I get you?"
-2. When customer orders item → Call add_item_to_order → Confirm "Got it, [item]. What else?"
+2. When customer orders item → Check if item has multiple sizes:
+   - IF item has multiple sizes AND customer didn't specify size → Ask "What size would you like?" (DO NOT call add_item_to_order yet)
+   - IF size is provided OR item only has one size → Call add_item_to_order → Confirm "Got it, [item]. What else?"
 3. When customer says done ("that's it", "all set") → Say exact total → Ask "Pickup or delivery?"
 4. When customer says pickup/delivery → Call set_delivery_method
 5. IF DELIVERY → Ask "What's the delivery address?" → When customer gives ANY address → YOU MUST IMMEDIATELY call set_address tool with the FULL address → Then confirm "Perfect, [address]. Got it!"
@@ -370,6 +372,8 @@ CRITICAL RULES (MANDATORY - DO NOT SKIP):
 - Use EXACT total from ORDER summary - NEVER say "about"
 - After calling set_address → You MUST confirm the address back to customer
 - After calling set_customer_name → You MUST confirm the name back to customer
+- SIZE REQUIREMENT: If customer orders an item with multiple sizes (shown in menu) but doesn't specify size, you MUST ask "What size would you like?" BEFORE calling add_item_to_order
+- ITEM DESCRIPTIONS: If customer asks "what is [item]?" or "tell me about [item]" or "what's [item]?", use the description from the menu to explain what that item is
 
 CONFIRM PHRASES: "Got it.", "Perfect.", "Sure thing."`;
 }
@@ -852,17 +856,34 @@ function parseMenuFromSheets(rows, toppings = [], sizeGuide = []) {
     // Normalize item name for menu lookup
     const baseItemName = itemName.toLowerCase();
     
-    // Determine available sizes based on item type
+    // Determine available sizes based on item type and sizeGuide
     let sizes = ['regular'];
     const lowerItem = itemName.toLowerCase();
-    if (lowerItem.includes('pizza') && !lowerItem.includes('create your own')) {
-      sizes = ['regular']; // Most pizzas have one size, use size guide for variations
-    } else if (lowerItem.includes('wings')) {
-      sizes = ['regular'];
-    } else if (lowerItem.includes('salad')) {
-      sizes = ['regular'];
-    } else if (lowerItem.includes('sub') || lowerItem.includes('gyro')) {
-      sizes = ['regular'];
+    const lowerCategory = category.toLowerCase();
+    
+    // Check sizeGuide for this item type/category
+    const matchingSizes = sizeGuide.filter(sg => {
+      const sgType = (sg.itemType || '').toLowerCase();
+      return sgType === lowerCategory || 
+             sgType === lowerItem ||
+             lowerItem.includes(sgType) ||
+             sgType.includes(lowerItem.split(' ')[0]); // Match first word
+    });
+    
+    if (matchingSizes.length > 0) {
+      // Extract unique sizes from sizeGuide
+      sizes = [...new Set(matchingSizes.map(sg => (sg.size || 'regular').toLowerCase()))];
+    } else {
+      // Fallback: check common patterns
+      if (lowerItem.includes('pizza') && !lowerItem.includes('create your own')) {
+        sizes = ['regular']; // Most pizzas have one size, use size guide for variations
+      } else if (lowerItem.includes('wings')) {
+        sizes = ['regular'];
+      } else if (lowerItem.includes('salad')) {
+        sizes = ['regular'];
+      } else if (lowerItem.includes('sub') || lowerItem.includes('gyro')) {
+        sizes = ['regular'];
+      }
     }
     
     // Create menu entry
@@ -984,9 +1005,12 @@ function formatMenuText(menu, menuTextByCategory, toppings = [], sizeGuide = [])
       categories[category] = [];
     }
     
-    // Include item name and price for customer reference
+    // Include item name, price, and description for customer reference
     const price = item.priceMap[item.sizes[0]] || 0;
-    categories[category].push(`${itemName} ($${price.toFixed(2)})`);
+    const description = item.description || '';
+    const sizeInfo = item.sizes && item.sizes.length > 1 ? ` (sizes: ${item.sizes.join(', ')})` : '';
+    const descInfo = description ? ` - ${description}` : '';
+    categories[category].push(`${itemName} ($${price.toFixed(2)})${sizeInfo}${descInfo}`);
   });
 
   // Format by category - compact format
@@ -2039,6 +2063,8 @@ wss.on('connection', (ws, req) => {
     
     const menuText = menuData.menuText;
     const menu = menuData.menu;
+    const sizeGuide = menuData.sizeGuide || [];
+    const toppings = menuData.toppings || [];
     let sessionReady = false;
     
     // Connect to OpenAI Realtime API
@@ -3121,11 +3147,12 @@ wss.on('connection', (ws, req) => {
                       
                       // Try to find item in menu - CRITICAL: Only add items that exist in menu
                       let foundInMenu = false;
+                      let menuItemData = null;
                       for (const menuItem in menu) {
                         if (menuItem.toLowerCase() === name.toLowerCase()) {
                           itemName = menuItem;
                           foundInMenu = true;
-                          const menuItemData = menu[menuItem];
+                          menuItemData = menu[menuItem];
                           if (size && menuItemData.priceMap && menuItemData.priceMap[size]) {
                             itemPrice = menuItemData.priceMap[size];
                           } else if (menuItemData.price) {
@@ -3140,6 +3167,20 @@ wss.on('connection', (ws, req) => {
                         console.warn(`⚠️  Item "${name}" not found in menu - skipping. This might be a name or invalid item.`);
                         console.warn(`⚠️  Available menu items: ${Object.keys(menu).join(', ')}`);
                         break; // Don't add items that aren't in the menu
+                      }
+                      
+                      // Check if item has multiple sizes and size is missing
+                      if (menuItemData && menuItemData.sizes && menuItemData.sizes.length > 1 && !size) {
+                        console.log(`⚠️  Item "${itemName}" has multiple sizes (${menuItemData.sizes.join(', ')}) but no size provided - rejecting tool call`);
+                        // Send a session.update to instruct AI to ask for size
+                        const sizeOptions = menuItemData.sizes.join(', ');
+                        safeSendToOpenAI({
+                          type: 'session.update',
+                          session: {
+                            instructions: `CRITICAL: Customer ordered "${itemName}" but did not specify a size. This item comes in: ${sizeOptions}. You MUST ask "What size would you like?" before adding it to the order.`
+                          }
+                        }, 'size request instruction');
+                        break; // Don't add item without size
                       }
                       
                       // Ensure items array exists
