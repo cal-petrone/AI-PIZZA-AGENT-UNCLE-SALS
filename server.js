@@ -2901,6 +2901,7 @@ wss.on('connection', (ws, req) => {
                     
                     let itemPrice = 0;
                     let itemName = name;
+                    let menuItemData = null; // Declare outside loop so it's accessible later
                     
                     // Try to find item in menu - CRITICAL: Only add items that exist in menu
                     let foundInMenu = false;
@@ -2912,7 +2913,7 @@ wss.on('connection', (ws, req) => {
                         if (menuItem.toLowerCase() === name.toLowerCase()) {
                           itemName = menuItem;
                           foundInMenu = true;
-                          const menuItemData = menu[menuItem];
+                          menuItemData = menu[menuItem]; // Now assigns to outer variable
                           // #region agent log
                           fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2261',message:'Item found in menu',data:{searchName:name,matchedItem:menuItem,size:size,hasPriceMap:!!menuItemData.priceMap,hasPrice:!!menuItemData.price},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
                           // #endregion
@@ -2978,6 +2979,7 @@ wss.on('connection', (ws, req) => {
                     const isWingsItem2 = itemNameLower2.includes('wing');
                     const flavor2 = toolInput.flavor;
                     const modifiers2 = toolInput.modifiers;
+                    const dressing2 = toolInput.dressing;
                     
                     // Check if item already exists to prevent duplicates
                     try {
@@ -2992,7 +2994,7 @@ wss.on('connection', (ws, req) => {
                         currentOrder.items[existingItemIndex].quantity += quantity;
                         console.log(`✅ Updated item quantity: ${currentOrder.items[existingItemIndex].quantity}x ${size || 'regular'} ${itemName}`);
                       } else {
-                        // Add new item with flavor and modifiers
+                        // Add new item with flavor, dressing, and modifiers
                         const newItem2 = {
                           name: itemName,
                           size: size || 'regular',
@@ -3001,11 +3003,17 @@ wss.on('connection', (ws, req) => {
                           category: menuItemData?.category || 'other'
                         };
                         if (flavor2) newItem2.flavor = flavor2;
+                        if (dressing2) newItem2.dressing = dressing2;
                         if (modifiers2) newItem2.modifiers = modifiers2;
                         
                         currentOrder.items.push(newItem2);
+                        
+                        // DEBUG: Log complete item structure
+                        console.log('📦 ITEM_ADDED_FULL (backup handler):', JSON.stringify(newItem2, null, 2));
+                        
                         const flavorStr2 = flavor2 ? ` (${flavor2})` : '';
-                        console.log(`✅ Added item to order: ${quantity}x ${size || 'regular'} ${itemName}${flavorStr2} - $${itemPrice}`);
+                        const dressingStr2 = dressing2 ? `, ${dressing2}` : '';
+                        console.log(`✅ Added item to order: ${quantity}x ${size || 'regular'} ${itemName}${flavorStr2}${dressingStr2} - $${itemPrice}`);
                       }
                       
                       // CRITICAL: Update order in map immediately
