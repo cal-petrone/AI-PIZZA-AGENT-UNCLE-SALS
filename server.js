@@ -346,34 +346,47 @@ function getCoreRulesPrompt() {
   return `Pizza assistant for Uncle Sal's. Max 1-2 short sentences per response.
 
 CRITICAL TOOL REQUIREMENTS - YOU MUST CALL THESE TOOLS:
-1. add_item_to_order - Call IMMEDIATELY when customer orders ANY food item
+1. add_item_to_order - Call IMMEDIATELY when customer orders ANY food item (include "flavor" for wings!)
 2. set_delivery_method - Call when customer says "pickup" or "delivery"
 3. set_address - Call IMMEDIATELY when customer gives a delivery address
 4. set_customer_name - Call IMMEDIATELY when customer gives their name
 5. confirm_order - Call at the very end to finalize
+6. get_item_description - Call when customer asks "what is [item]?" or "what comes on [item]?"
 
 ORDER FLOW (follow this EXACT sequence):
 1. Greet: "Thanks for calling Uncle Sal's. What can I get you?"
-2. When customer orders item → Check if item has multiple sizes:
+2. When customer orders item → Check requirements:
    - IF item has multiple sizes AND customer didn't specify size → Ask "What size would you like?" (DO NOT call add_item_to_order yet)
-   - IF size is provided OR item only has one size → Call add_item_to_order → Confirm "Got it, [item]. What else?"
-3. When customer says done ("that's it", "all set") → Say exact total → Ask "Pickup or delivery?"
-4. When customer says pickup/delivery → Call set_delivery_method
-5. IF DELIVERY → Ask "What's the delivery address?" → When customer gives ANY address → YOU MUST IMMEDIATELY call set_address tool with the FULL address → Then confirm "Perfect, [address]. Got it!"
-6. THEN ask "And what name for the order?" → When customer gives ANY name → YOU MUST IMMEDIATELY call set_customer_name tool → Then confirm "Got it, [name]."
-7. Finally → Call confirm_order → Say "Awesome, thanks for ordering with Uncle Sal's today!"
+   - IF item is WINGS and customer didn't specify FLAVOR → Ask "What flavor would you like for your wings?" (DO NOT call add_item_to_order yet)
+   - IF size/flavor provided OR not needed → Call add_item_to_order (with flavor param for wings!) → Confirm "Got it, [item]. Anything else?"
+3. Keep taking items until customer says done ("that's it", "all set")
+4. Say exact total → Ask "Pickup or delivery?"
+5. When customer says pickup/delivery → Call set_delivery_method
+6. IF DELIVERY → Ask "What's the delivery address?" → When given address → Call set_address → Confirm address
+7. Ask "And what name for the order?" → When given name → Call set_customer_name → Confirm name
+8. Call confirm_order → Say "Awesome, thanks for ordering with Uncle Sal's today!"
 
-CRITICAL RULES (MANDATORY - DO NOT SKIP):
+WING ORDERING RULES (CRITICAL):
+- When ordering wings, ALWAYS ask for FLAVOR if not specified
+- Include the "flavor" parameter when calling add_item_to_order for wings
+- Example: add_item_to_order(name="regular wings", flavor="hot")
+- DO NOT add wings to order without a flavor - employees need to know what to make!
+- After wings flavor is given, confirm: "Got it, [quantity] [flavor] wings."
+
+MULTI-ITEM ORDERS:
+- Customers can order as many items as they want - NO LIMIT
+- After each item, ask "Anything else?" or "What else can I get you?"
+- Keep track of ALL items ordered
+- Only read back the full order when customer says they're done
+
+CRITICAL RULES (MANDATORY):
 - Phone number is already captured - DO NOT ask for it
-- ALWAYS ask for NAME after pickup/delivery is set (MANDATORY)
-- ALWAYS ask for ADDRESS if delivery is selected (MANDATORY - CANNOT SKIP)
-- When customer provides address → YOU MUST call set_address tool IMMEDIATELY (do NOT just talk about it - CALL THE TOOL)
-- When customer provides name → YOU MUST call set_customer_name tool IMMEDIATELY (do NOT just talk about it - CALL THE TOOL)
-- Use EXACT total from ORDER summary - NEVER say "about"
-- After calling set_address → You MUST confirm the address back to customer
-- After calling set_customer_name → You MUST confirm the name back to customer
-- SIZE REQUIREMENT: If customer orders an item with multiple sizes (shown in menu as "sizes: small, medium, large") but doesn't specify size, you MUST ask "What size would you like?" BEFORE calling add_item_to_order. DO NOT call add_item_to_order without a size if the menu shows multiple sizes for that item.
-- ITEM DESCRIPTIONS: If customer asks "what is [item]?", "tell me about [item]", "what's [item]?", "what comes on [item]?", or "what does [item] come with?" → You MUST call get_item_description tool IMMEDIATELY. Do NOT answer from memory or guess. Use ONLY the description returned by the tool. If you don't call the tool, you will give wrong information.
+- ALWAYS ask for NAME after pickup/delivery is set
+- ALWAYS ask for ADDRESS if delivery is selected
+- Use EXACT total from ORDER summary - NEVER say "about" or give a range
+- SIZE REQUIREMENT: Ask for size if item has multiple sizes and customer didn't specify
+- FLAVOR REQUIREMENT: Ask for wing flavor if ordering wings and customer didn't specify
+- ITEM DESCRIPTIONS: Use get_item_description tool - do NOT guess descriptions
 
 CONFIRM PHRASES: "Got it.", "Perfect.", "Sure thing."`;
 }
@@ -844,14 +857,16 @@ async function fetchMenuFromGoogleSheets() {
     const menuSheetName = process.env.GOOGLE_SHEETS_MENU_SHEET || 'Menu Items';
     const toppingsSheetName = process.env.GOOGLE_SHEETS_TOPPINGS_SHEET || 'Pizza_Toppings';
     const sizeGuideSheetName = process.env.GOOGLE_SHEETS_SIZE_GUIDE_SHEET || 'Size_Guide';
+    const wingOptionsSheetName = process.env.GOOGLE_SHEETS_WING_SHEET || 'Wing_Options';
 
     console.log(`📋 Fetching menu from Google Sheets: ${menuSheetId}`);
-    console.log(`📋 Sheet names: Menu="${menuSheetName}", Toppings="${toppingsSheetName}", SizeGuide="${sizeGuideSheetName}"`);
+    console.log(`📋 Sheet names: Menu="${menuSheetName}", Toppings="${toppingsSheetName}", SizeGuide="${sizeGuideSheetName}", Wings="${wingOptionsSheetName}"`);
     
-    // Fetch all 3 sheets in parallel for efficiency
+    // Fetch all sheets in parallel for efficiency
     let menuRows = [];
     let toppingsRows = [];
     let sizeGuideRows = [];
+    let wingOptionsRows = [];
     
     // Fetch Menu Items sheet (A-R to capture all columns)
     try {
@@ -897,17 +912,34 @@ async function fetchMenuFromGoogleSheets() {
       console.warn(`⚠️  Continuing without size guide data`);
     }
     
+    // Fetch Wing_Options sheet (flavors, piece counts, dressings, extras)
+    try {
+      const wingOptionsRange = `'${wingOptionsSheetName}'!A2:E100`;
+      console.log(`📋 Fetching wing options: ${wingOptionsRange}`);
+      const wingOptionsResponse = await sheets.spreadsheets.values.get({
+        spreadsheetId: menuSheetId,
+        range: wingOptionsRange,
+      });
+      wingOptionsRows = wingOptionsResponse.data.values || [];
+      console.log(`🍗 Found ${wingOptionsRows.length} wing option rows`);
+    } catch (error) {
+      console.warn(`⚠️  Could not fetch wing options sheet "${wingOptionsSheetName}":`, error.message);
+      console.warn(`⚠️  Continuing without wing options data - flavors will not be available`);
+    }
+    
     if (menuRows.length === 0) {
       console.warn('⚠️  No menu data found in Google Sheets, using default menu');
       return getDefaultMenuData();
     }
 
-    // Parse toppings and size guide first
+    // Parse toppings, size guide, and wing options first
     const toppings = parseToppingsFromSheets(toppingsRows);
     const sizeGuide = parseSizeGuideFromSheets(sizeGuideRows);
+    const wingOptions = parseWingOptionsFromSheets(wingOptionsRows);
     
-    // Parse menu data with toppings and size guide
+    // Parse menu data with toppings, size guide, and wing options
     const menuData = parseMenuFromSheets(menuRows, toppings, sizeGuide);
+    menuData.wingOptions = wingOptions; // Add wing options to menu data
     
     // CRITICAL: If parsing resulted in 0 items, fall back to default menu
     const itemCount = Object.keys(menuData.menu).length;
@@ -926,7 +958,7 @@ async function fetchMenuFromGoogleSheets() {
     menuCache = menuData;
     menuCacheTimestamp = now;
     
-    console.log(`✅ Menu fetched from Google Sheets: ${itemCount} items, ${toppings.length} toppings, ${sizeGuide.length} size guide entries`);
+    console.log(`✅ Menu fetched from Google Sheets: ${itemCount} items, ${toppings.length} toppings, ${sizeGuide.length} size guide entries, ${wingOptions.flavors?.length || 0} wing flavors`);
     return menuData;
 
   } catch (error) {
@@ -1183,6 +1215,62 @@ function parseSizeGuideFromSheets(rows) {
   
   console.log(`📋 Parsed ${sizeGuide.length} size guide entries`);
   return sizeGuide;
+}
+
+/**
+ * Parse wing options from Wing_Options sheet
+ * Format: A=Option Type, B=Option Name, C=Price, D=Notes, E=Available
+ * Option Types: "Flavor", "Piece Count", "Dressing", "Extra"
+ */
+function parseWingOptionsFromSheets(rows) {
+  const wingOptions = {
+    flavors: [],
+    pieceCounts: [],
+    dressings: [],
+    extras: []
+  };
+  
+  rows.forEach((row, index) => {
+    if (!row || row.length < 2) return;
+    
+    const optionType = (row[0] || '').toString().trim().toLowerCase();
+    const optionName = (row[1] || '').toString().trim();
+    let priceStr = (row[2] || '').toString().trim();
+    const notes = (row[3] || '').toString().trim();
+    const available = (row[4] || 'YES').toString().trim().toUpperCase();
+    
+    if (!optionType || !optionName) return;
+    if (available !== 'YES') return; // Skip unavailable options
+    
+    // Parse price
+    priceStr = priceStr.replace(/^\$/, '');
+    const price = parseFloat(priceStr) || 0;
+    
+    const option = {
+      name: optionName,
+      price: price,
+      notes: notes
+    };
+    
+    // Categorize by type
+    if (optionType.includes('flavor')) {
+      wingOptions.flavors.push(option);
+    } else if (optionType.includes('piece') || optionType.includes('count') || optionType.includes('quantity')) {
+      wingOptions.pieceCounts.push(option);
+    } else if (optionType.includes('dressing') || optionType.includes('sauce') || optionType.includes('dip')) {
+      wingOptions.dressings.push(option);
+    } else if (optionType.includes('extra') || optionType.includes('add')) {
+      wingOptions.extras.push(option);
+    }
+  });
+  
+  console.log(`🍗 Parsed wing options: ${wingOptions.flavors.length} flavors, ${wingOptions.pieceCounts.length} piece counts, ${wingOptions.dressings.length} dressings, ${wingOptions.extras.length} extras`);
+  
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:parseWingOptionsFromSheets',message:'WING_OPTIONS_PARSED',data:{flavorCount:wingOptions.flavors.length,flavors:wingOptions.flavors.map(f=>f.name),pieceCountCount:wingOptions.pieceCounts.length,dressingCount:wingOptions.dressings.length},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'I_wings'})}).catch(()=>{});
+  // #endregion
+  
+  return wingOptions;
 }
 
 /**
@@ -2345,13 +2433,13 @@ wss.on('connection', (ws, req) => {
             {
               type: 'function',
               name: 'add_item_to_order',
-              description: 'MANDATORY: You MUST call this tool immediately when the customer orders ANY item. Do NOT just mention items in your response - you MUST call this tool to add them to the order. If customer says "large pepperoni pizza", call this tool with name="pepperoni pizza", size="large". If customer says "fries", call this tool with name="french fries". DO NOT generate text responses about items without calling this tool.',
+              description: 'MANDATORY: You MUST call this tool immediately when the customer orders ANY item. Do NOT just mention items in your response - you MUST call this tool to add them to the order. If customer says "large pepperoni pizza", call this tool with name="pepperoni pizza", size="large". If customer says "fries", call this tool with name="french fries". For WINGS: You MUST include the flavor parameter - if customer did not specify flavor, ASK them "What flavor would you like for your wings?" BEFORE calling this tool. DO NOT generate text responses about items without calling this tool.',
               parameters: {
                 type: 'object',
                 properties: {
                   name: {
                     type: 'string',
-                    description: 'The exact menu item name (e.g., "pepperoni pizza", "garlic knots", "soda")'
+                    description: 'The exact menu item name (e.g., "pepperoni pizza", "garlic knots", "soda", "regular wings")'
                   },
                   size: {
                     type: 'string',
@@ -2362,6 +2450,14 @@ wss.on('connection', (ws, req) => {
                     type: 'integer',
                     description: 'Quantity of this item (default: 1)',
                     default: 1
+                  },
+                  flavor: {
+                    type: 'string',
+                    description: 'REQUIRED FOR WINGS: The wing flavor (e.g., "hot", "mild", "bbq", "garlic parmesan", "buffalo"). You MUST ask the customer for their flavor choice if ordering wings and they did not specify.'
+                  },
+                  modifiers: {
+                    type: 'string',
+                    description: 'Any special instructions or modifiers (e.g., "extra crispy", "no onions", "with blue cheese")'
                   }
                 },
                 required: ['name']
@@ -2838,33 +2934,49 @@ wss.on('connection', (ws, req) => {
                       return; // Exit early - don't add item
                     }
                     
+                    // Check for wing items needing flavor
+                    const itemNameLower2 = itemName.toLowerCase();
+                    const isWingsItem2 = itemNameLower2.includes('wing');
+                    const flavor2 = toolInput.flavor;
+                    const modifiers2 = toolInput.modifiers;
+                    
                     // Check if item already exists to prevent duplicates
                     try {
                       const existingItemIndex = currentOrder.items.findIndex(
                         item => item && item.name && item.name.toLowerCase() === itemName.toLowerCase() && 
-                                (item.size || 'regular') === (size || 'regular')
+                                (item.size || 'regular') === (size || 'regular') &&
+                                (!isWingsItem2 || item.flavor === flavor2)
                       );
                       
-                      if (existingItemIndex >= 0) {
-                        // Update quantity if item already exists
+                      if (existingItemIndex >= 0 && !isWingsItem2) {
+                        // Update quantity if item already exists (non-wings)
                         currentOrder.items[existingItemIndex].quantity += quantity;
                         console.log(`✅ Updated item quantity: ${currentOrder.items[existingItemIndex].quantity}x ${size || 'regular'} ${itemName}`);
                       } else {
-                        // Add new item
-                        currentOrder.items.push({
+                        // Add new item with flavor and modifiers
+                        const newItem2 = {
                           name: itemName,
                           size: size || 'regular',
                           quantity: quantity,
-                          price: itemPrice
-                        });
-                        console.log(`✅ Added item to order: ${quantity}x ${size || 'regular'} ${itemName} - $${itemPrice}`);
+                          price: itemPrice,
+                          category: menuItemData?.category || 'other'
+                        };
+                        if (flavor2) newItem2.flavor = flavor2;
+                        if (modifiers2) newItem2.modifiers = modifiers2;
+                        
+                        currentOrder.items.push(newItem2);
+                        const flavorStr2 = flavor2 ? ` (${flavor2})` : '';
+                        console.log(`✅ Added item to order: ${quantity}x ${size || 'regular'} ${itemName}${flavorStr2} - $${itemPrice}`);
                       }
                       
                       // CRITICAL: Update order in map immediately
                       activeOrders.set(streamSid, currentOrder);
-                      console.log(`📊 Order now has ${currentOrder.items.length} item(s):`, currentOrder.items.map(i => `${i.quantity}x ${i.name}`).join(', '));
+                      console.log(`📊 Order now has ${currentOrder.items.length} item(s):`, currentOrder.items.map(i => {
+                        const f = i.flavor ? ` (${i.flavor})` : '';
+                        return `${i.quantity}x ${i.name}${f}`;
+                      }).join(', '));
                       // #region agent log
-                      fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2342',message:'Item added to order',data:{streamSid:streamSid,itemsCount:currentOrder.items.length,items:currentOrder.items.map(i=>({name:i.name,quantity:i.quantity,price:i.price}))},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+                      fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:2342',message:'Item added to order',data:{streamSid:streamSid,itemsCount:currentOrder.items.length,items:currentOrder.items.map(i=>({name:i.name,quantity:i.quantity,price:i.price,flavor:i.flavor||null}))},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
                       // #endregion
                       
                       // Verify the order was saved correctly
@@ -3501,36 +3613,100 @@ wss.on('connection', (ws, req) => {
                         break; // Don't add item without size
                       }
                       
+                      // CRITICAL: Check if item is wings and flavor is missing
+                      const itemNameLower = itemName.toLowerCase();
+                      const categoryLower = (menuItemData?.category || '').toLowerCase();
+                      const isWingsItem = categoryLower.includes('wing') || itemNameLower.includes('wing');
+                      const { flavor, modifiers } = toolInput;
+                      
+                      if (isWingsItem && !flavor) {
+                        console.log(`🍗 Wings item "${itemName}" ordered without flavor - must ask for flavor!`);
+                        
+                        // Get available flavors from wingOptions
+                        const availableFlavors = menuCache?.wingOptions?.flavors || [];
+                        let flavorList = availableFlavors.length > 0 
+                          ? availableFlavors.map(f => f.name).join(', ')
+                          : 'hot, mild, BBQ, garlic parmesan, buffalo';
+                        
+                        // #region agent log
+                        fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:wing_flavor_check',message:'WINGS_NO_FLAVOR',data:{itemName,availableFlavorsCount:availableFlavors.length,flavorList},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'I_wings'})}).catch(()=>{});
+                        // #endregion
+                        
+                        safeSendToOpenAI({
+                          type: 'session.update',
+                          session: {
+                            instructions: `CRITICAL: Customer ordered "${itemName}" but did not specify a wing flavor. Available flavors: ${flavorList}. You MUST ask "What flavor would you like for your wings?" Do NOT add the wings to the order yet - wait for the customer to specify the flavor first.`
+                          }
+                        }, 'wing flavor request instruction');
+                        
+                        // Trigger a response to ask for flavor
+                        setTimeout(() => {
+                          safeSendToOpenAI({
+                            type: 'response.create',
+                            response: {
+                              modalities: ['text']
+                            }
+                          }, 'wing flavor request response');
+                        }, 100);
+                        break; // Don't add wings without flavor
+                      }
+                      
                       // Ensure items array exists
                       if (!Array.isArray(currentOrder.items)) {
                         currentOrder.items = [];
                       }
                       
-                      // Check if item already exists to prevent duplicates
+                      // Check if item already exists to prevent duplicates (only if same flavor for wings)
                       const existingItemIndex = currentOrder.items.findIndex(
                         item => item && item.name && item.name.toLowerCase() === itemName.toLowerCase() && 
-                                (item.size || 'regular') === (size || 'regular')
+                                (item.size || 'regular') === (size || 'regular') &&
+                                (!isWingsItem || item.flavor === flavor)
                       );
                       
-                      if (existingItemIndex >= 0) {
-                        // Update quantity if item already exists
+                      if (existingItemIndex >= 0 && !isWingsItem) {
+                        // Update quantity if item already exists (only for non-wing items)
                         currentOrder.items[existingItemIndex].quantity += quantity;
                         console.log(`✅ Updated item quantity: ${currentOrder.items[existingItemIndex].quantity}x ${size || 'regular'} ${itemName}`);
                       } else {
-                        // Add new item
-                        currentOrder.items.push({
+                        // Add new item with flavor and modifiers
+                        const newItem = {
                           name: itemName,
                           size: size || 'regular',
                           quantity: quantity,
-                          price: itemPrice
-                        });
-                        console.log(`✅ Added item to order: ${quantity}x ${size || 'regular'} ${itemName} - $${itemPrice}`);
+                          price: itemPrice,
+                          category: menuItemData?.category || 'other'
+                        };
+                        
+                        // Add flavor for wings
+                        if (flavor) {
+                          newItem.flavor = flavor;
+                          console.log(`🍗 Added wing flavor: ${flavor}`);
+                        }
+                        
+                        // Add modifiers/notes
+                        if (modifiers) {
+                          newItem.modifiers = modifiers;
+                          console.log(`📝 Added modifiers: ${modifiers}`);
+                        }
+                        
+                        currentOrder.items.push(newItem);
+                        
+                        // #region agent log
+                        fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:item_added',message:'ITEM_ADDED_TO_ORDER',data:{itemName,size:size||'regular',quantity,price:itemPrice,flavor:flavor||null,modifiers:modifiers||null,totalItems:currentOrder.items.length},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'J_multiitem'})}).catch(()=>{});
+                        // #endregion
+                        
+                        const flavorStr = flavor ? ` (${flavor})` : '';
+                        const modifierStr = modifiers ? ` [${modifiers}]` : '';
+                        console.log(`✅ Added item to order: ${quantity}x ${size || 'regular'} ${itemName}${flavorStr}${modifierStr} - $${itemPrice}`);
                       }
                       
                       // CRITICAL: Update order in map immediately
                       activeOrders.set(streamSid, currentOrder);
                       try {
-                        console.log(`📊 Order now has ${currentOrder.items.length} item(s):`, currentOrder.items.map(i => `${i.quantity}x ${i.name}`).join(', '));
+                        console.log(`📊 Order now has ${currentOrder.items.length} item(s):`, currentOrder.items.map(i => {
+                          const f = i.flavor ? ` (${i.flavor})` : '';
+                          return `${i.quantity}x ${i.name}${f}`;
+                        }).join(', '));
                       } catch (e) {
                         console.log(`📊 Order now has ${currentOrder.items.length} item(s)`);
                       }

@@ -142,19 +142,44 @@ async function initializeGoogleSheets() {
 /**
  * Format phone number as 315-876-3210
  * @param {string} phone - Phone number (digits only or with formatting)
- * @returns {string} Formatted phone number (315-876-3210) or 'not provided'
+ * @returns {string} Formatted phone number (315-876-3210) or appropriate fallback
  */
 function formatPhoneNumber(phone) {
-  if (!phone) return 'not provided';
+  // Handle missing/blocked/unknown phone numbers
+  if (!phone) {
+    console.log('📞 Phone number missing - returning "Unknown"');
+    return 'Unknown';
+  }
+  
+  const phoneStr = String(phone).toLowerCase().trim();
+  
+  // Check for blocked/anonymous/restricted caller IDs
+  if (phoneStr.includes('anonymous') || phoneStr.includes('blocked') || 
+      phoneStr.includes('restricted') || phoneStr.includes('private') ||
+      phoneStr === 'undefined' || phoneStr === 'null') {
+    console.log(`📞 Phone number is blocked/anonymous: "${phone}" - returning "Blocked"`);
+    return 'Blocked';
+  }
   
   // Extract only digits
   const digits = String(phone).replace(/\D/g, '');
   
-  // Must be 10 digits
-  if (digits.length !== 10) return 'not provided';
+  // Handle country code (remove leading 1 for US numbers if 11 digits)
+  let cleanDigits = digits;
+  if (digits.length === 11 && digits.startsWith('1')) {
+    cleanDigits = digits.slice(1);
+  }
+  
+  // Must be 10 digits for US number
+  if (cleanDigits.length !== 10) {
+    console.log(`📞 Phone number has ${cleanDigits.length} digits (expected 10): "${phone}" - returning raw`);
+    return phone || 'Unknown';
+  }
   
   // Format as 315-876-3210
-  return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+  const formatted = `${cleanDigits.slice(0, 3)}-${cleanDigits.slice(3, 6)}-${cleanDigits.slice(6)}`;
+  console.log(`📞 Phone number formatted: "${phone}" -> "${formatted}"`);
+  return formatted;
 }
 
 /**
@@ -196,12 +221,14 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
       
       console.log(`📊 Price calculation: Subtotal: $${subtotal.toFixed(2)} + Tax (${(taxRate * 100).toFixed(0)}%): $${tax.toFixed(2)} = Total: $${total.toFixed(2)}`);
       
-      // Format items as string
+      // Format items as string (include flavor for wings, modifiers for customization)
       const itemsString = order.items.map(item => {
         const qty = item.quantity || 1;
         const size = item.size ? `${item.size} ` : '';
-        return `${qty}x ${size}${item.name}`;
-      }).join(', ');
+        const flavor = item.flavor ? ` (${item.flavor})` : '';
+        const mods = item.modifiers ? ` [${item.modifiers}]` : '';
+        return `${qty}x ${size}${item.name}${flavor}${mods}`;
+      }).join('; '); // Use semicolon for multi-item separation (clearer)
       
       // Prepare row data - match your Google Sheet columns exactly (7 columns: A-G)
       // Column A: Name (capitalized)
@@ -403,6 +430,25 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
     }
     
     const row = validatedRow;
+      
+      // CRITICAL DEBUG: Log the exact payload being written
+      console.log('📝 LOG_PAYLOAD - Writing row to Google Sheets:');
+      console.log('📝 LOG_PAYLOAD:', JSON.stringify({
+        name: row[0],
+        phone: row[1],
+        deliveryMethod: row[2],
+        address: row[3],
+        time: row[4],
+        price: row[5],
+        orderDetails: row[6]
+      }, null, 2));
+      
+      // CRITICAL: Verify phone is present
+      if (!row[1] || row[1] === '' || row[1] === undefined) {
+        console.error('❌❌❌ CRITICAL: Phone number is BLANK in row! This should never happen!');
+        console.error('❌ Order customerPhone:', order.customerPhone);
+        row[1] = 'Unknown'; // Fallback to prevent blank
+      }
       
       // Append to sheet - write to columns A through G (7 columns)
       const response = await sheetsClient.spreadsheets.values.append({
