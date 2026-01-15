@@ -3811,6 +3811,10 @@ wss.on('connection', (ws, req) => {
                     if (toolInput && toolInput.name) {
                       const { name, size, quantity = 1 } = toolInput;
                       console.log(`🔧 Processing add_item_to_order: name=${name}, size=${size}, quantity=${quantity}`);
+                      
+                      // #region agent log
+                      fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:add_item_handler_entry',message:'ADD_ITEM_TOOL_CALL',data:{name,size:size||'NULL',quantity,fullToolInput:JSON.stringify(toolInput)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'O_wing_debug'})}).catch(()=>{});
+                      // #endregion
                       // Menu is already available from connectToOpenAI scope
                       let itemPrice = 0;
                       let itemName = name;
@@ -3924,6 +3928,10 @@ wss.on('connection', (ws, req) => {
                         
                         console.log(`🍗 FINAL PARSE: quantity=${finalQuantity}, pieceCount=${pieceCount}`);
                         
+                        // #region agent log
+                        fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:wing_parsing_before_validation',message:'WING_PARSED_BEFORE_VALIDATION',data:{rawQuantity:quantity,rawSize:size||'NULL',finalQuantity,pieceCount,validCounts:validCountNumbers,isValid:validCountNumbers.includes(pieceCount)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'O_wing_debug'})}).catch(()=>{});
+                        // #endregion
+                        
                         // Validate piece count
                         if (!validCountNumbers.includes(pieceCount)) {
                           console.log(`🍗❌ INVALID PIECE COUNT: ${pieceCount} - REJECTING ORDER`);
@@ -4027,6 +4035,10 @@ wss.on('connection', (ws, req) => {
                           newItem.itemType = 'wings';
                           newItem.wingType = 'Regular Wings';
                           console.log(`🍗 Set pieceCount: ${pieceCount}, price: $${wingPrice}`);
+                          
+                          // #region agent log
+                          fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:wing_item_created',message:'WING_ITEM_CREATED',data:{itemName,quantity:finalQuantity,pieceCount,flavor,wingPrice,itemStructure:JSON.stringify(newItem)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'O_wing_debug'})}).catch(()=>{});
+                          // #endregion
                         }
                         
                         // Add flavor for wings

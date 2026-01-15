@@ -250,6 +250,10 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
           console.log(`🍗 WING_FORMAT: qty=${qty}, pieceCount=${pieceCount}, flavor=${item.flavor || 'NONE'}`);
           console.log(`🍗 FINAL_WING_STRING: ${qty}x ${wingName}${wingDetails}`);
           
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'google-sheets.js:wing_format',message:'WING_FORMAT_IN_SHEETS',data:{itemQuantity:qty,pieceCount:pieceCount,flavor:item.flavor||'NONE',dressing:item.dressing||'NONE',itemName:item.name,itemFull:JSON.stringify(item),finalString:`${qty}x ${wingName}${wingDetails}`},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'P_sheets_format'})}).catch(()=>{});
+          // #endregion
+          
           return `${qty}x ${wingName}${wingDetails}`;
         } else {
           // Non-wings: size, flavor (if any), modifiers
