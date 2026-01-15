@@ -680,35 +680,74 @@ async function fetchMenuFromGoogleSheets() {
 
     const sheets = google.sheets({ version: 'v4', auth });
 
-    // Fetch menu data (assuming it's in a sheet named "Menu" or "Sheet1")
-    const sheetName = process.env.GOOGLE_SHEETS_MENU_SHEET || 'Menu';
-    // Use a large explicit range to get ALL menu items (up to 1000 rows)
-    // Include columns A-H to support both old format (A-E) and new format (A, B, G, H)
-    const range = `${sheetName}!A2:H1000`; // Skip header row, get rows 2-1000 in columns A-H
+    // Sheet names from environment variables
+    const menuSheetName = process.env.GOOGLE_SHEETS_MENU_SHEET || 'Menu Items';
+    const toppingsSheetName = process.env.GOOGLE_SHEETS_TOPPINGS_SHEET || 'Pizza_Toppings';
+    const sizeGuideSheetName = process.env.GOOGLE_SHEETS_SIZE_GUIDE_SHEET || 'Size_Guide';
 
-    console.log(`📋 Fetching menu from Google Sheets: ${menuSheetId}, sheet: ${sheetName}, range: ${range}`);
+    console.log(`📋 Fetching menu from Google Sheets: ${menuSheetId}`);
+    console.log(`📋 Sheet names: Menu="${menuSheetName}", Toppings="${toppingsSheetName}", SizeGuide="${sizeGuideSheetName}"`);
     
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: menuSheetId,
-      range: range,
-    });
-
-    const rows = response.data.values || [];
+    // Fetch all 3 sheets in parallel for efficiency
+    let menuRows = [];
+    let toppingsRows = [];
+    let sizeGuideRows = [];
     
-    if (rows.length === 0) {
+    // Fetch Menu Items sheet
+    try {
+      const menuRange = `'${menuSheetName}'!A2:E1000`;
+      console.log(`📋 Fetching menu items: ${menuRange}`);
+      const menuResponse = await sheets.spreadsheets.values.get({
+        spreadsheetId: menuSheetId,
+        range: menuRange,
+      });
+      menuRows = menuResponse.data.values || [];
+      console.log(`📋 Found ${menuRows.length} menu item rows`);
+    } catch (error) {
+      console.error(`❌ Error fetching menu items sheet "${menuSheetName}":`, error.message);
+    }
+    
+    // Fetch Pizza Toppings sheet
+    try {
+      const toppingsRange = `'${toppingsSheetName}'!A2:D100`;
+      console.log(`📋 Fetching toppings: ${toppingsRange}`);
+      const toppingsResponse = await sheets.spreadsheets.values.get({
+        spreadsheetId: menuSheetId,
+        range: toppingsRange,
+      });
+      toppingsRows = toppingsResponse.data.values || [];
+      console.log(`📋 Found ${toppingsRows.length} topping rows`);
+    } catch (error) {
+      console.warn(`⚠️  Could not fetch toppings sheet "${toppingsSheetName}":`, error.message);
+      console.warn(`⚠️  Continuing without toppings data`);
+    }
+    
+    // Fetch Size Guide sheet
+    try {
+      const sizeGuideRange = `'${sizeGuideSheetName}'!A2:C100`;
+      console.log(`📋 Fetching size guide: ${sizeGuideRange}`);
+      const sizeGuideResponse = await sheets.spreadsheets.values.get({
+        spreadsheetId: menuSheetId,
+        range: sizeGuideRange,
+      });
+      sizeGuideRows = sizeGuideResponse.data.values || [];
+      console.log(`📋 Found ${sizeGuideRows.length} size guide rows`);
+    } catch (error) {
+      console.warn(`⚠️  Could not fetch size guide sheet "${sizeGuideSheetName}":`, error.message);
+      console.warn(`⚠️  Continuing without size guide data`);
+    }
+    
+    if (menuRows.length === 0) {
       console.warn('⚠️  No menu data found in Google Sheets, using default menu');
       return getDefaultMenuData();
     }
 
-    console.log(`📋 Found ${rows.length} rows in Google Sheets (before parsing)`);
+    // Parse toppings and size guide first
+    const toppings = parseToppingsFromSheets(toppingsRows);
+    const sizeGuide = parseSizeGuideFromSheets(sizeGuideRows);
     
-    // Check if we might have hit a limit (if exactly 1000 rows, might be more)
-    if (rows.length >= 1000) {
-      console.warn('⚠️  WARNING: Fetched 1000 rows - menu might be truncated! Consider increasing the range limit.');
-    }
-    
-    // Parse menu data
-    const menuData = parseMenuFromSheets(rows);
+    // Parse menu data with toppings and size guide
+    const menuData = parseMenuFromSheets(menuRows, toppings, sizeGuide);
     
     // CRITICAL: If parsing resulted in 0 items, fall back to default menu
     const itemCount = Object.keys(menuData.menu).length;
@@ -717,9 +756,9 @@ async function fetchMenuFromGoogleSheets() {
       console.error('❌ Falling back to default menu to prevent silent calls');
       console.error('❌ Please check:');
       console.error('   1. Sheet is shared with service account');
-      console.error('   2. Sheet name matches GOOGLE_SHEETS_MENU_SHEET (currently: ' + sheetName + ')');
+      console.error('   2. Sheet name matches GOOGLE_SHEETS_MENU_SHEET (currently: ' + menuSheetName + ')');
       console.error('   3. Data starts at row 2 (row 1 should be headers)');
-      console.error('   4. Columns: Item Name | Size | Price | Category | Available');
+      console.error('   4. Columns: Category | Item | IN STOCK | Price | Description');
       return getDefaultMenuData();
     }
     
@@ -727,7 +766,7 @@ async function fetchMenuFromGoogleSheets() {
     menuCache = menuData;
     menuCacheTimestamp = now;
     
-    console.log(`✅ Menu fetched from Google Sheets: ${itemCount} items`);
+    console.log(`✅ Menu fetched from Google Sheets: ${itemCount} items, ${toppings.length} toppings, ${sizeGuide.length} size guide entries`);
     return menuData;
 
   } catch (error) {
@@ -757,7 +796,7 @@ async function fetchMenuFromGoogleSheets() {
       console.error('📧 ============================================');
       console.error('📧 Service Account Email:', serviceAccountEmail);
       console.error('📧 Sheet ID:', menuSheetId);
-      console.error('📧 Sheet Name:', sheetName);
+      console.error('📧 Expected Sheets: Menu Items, Pizza_Toppings, Size_Guide');
       console.error('📧 Steps:');
       console.error('   1. Open your Google Sheet:', `https://docs.google.com/spreadsheets/d/${menuSheetId}/edit`);
       console.error('   2. Click "Share" button (top right)');
@@ -775,145 +814,72 @@ async function fetchMenuFromGoogleSheets() {
 
 /**
  * Parse Google Sheets rows into menu format
- * Supports two formats:
- * 1. Old format: A=Name, B=Size, C=Price, D=Category, E=Available
- * 2. New format: A=Name, B=Price, G=Size (comma-separated), H=Available
+ * UNCLE SAL'S FORMAT: A=Category, B=Item, C=IN STOCK, D=Price, E=Description
  */
-function parseMenuFromSheets(rows) {
+function parseMenuFromSheets(rows, toppings = [], sizeGuide = []) {
   const menu = {};
   const menuTextByCategory = {};
   
-  // Detect format by checking first few rows
-  const detectFormat = (sampleRows) => {
-    if (sampleRows.length === 0) return 'old';
-    const firstRow = sampleRows[0] || [];
-    // If column G (index 6) has size info, it's new format
-    if (firstRow.length > 6 && firstRow[6] && firstRow[6].toString().toLowerCase().includes('small')) {
-      return 'new';
-    }
-    // If column B (index 1) looks like a size, it's old format
-    if (firstRow.length > 1 && firstRow[1] && ['small', 'medium', 'large', 'regular'].includes(firstRow[1].toString().toLowerCase())) {
-      return 'old';
-    }
-    // Default to new format if column B looks like a price
-    if (firstRow.length > 1 && firstRow[1] && /^\d+\.?\d*$/.test(firstRow[1].toString().trim())) {
-      return 'new';
-    }
-    return 'old';
-  };
-  
-  const format = detectFormat(rows.slice(0, 5)); // Check first 5 rows
-  console.log(`📋 Detected menu format: ${format === 'new' ? 'New (A=Name, B=Price, G=Size)' : 'Old (A=Name, B=Size, C=Price)'}`);
+  console.log(`📋 Parsing menu with Uncle Sal's format: A=Category, B=Item, C=InStock, D=Price, E=Description`);
   
   rows.forEach((row, index) => {
-    // Skip empty rows
-    if (!row || row.length < 2) {
+    // Skip empty rows or rows with less than 4 columns
+    if (!row || row.length < 4) {
       return;
     }
     
-    let itemName, size, price, category, available;
+    // Uncle Sal's format: A=Category, B=Item, C=IN STOCK, D=Price, E=Description
+    const category = (row[0] || '').toString().trim();
+    const itemName = (row[1] || '').toString().trim();
+    const inStock = (row[2] || '').toString().trim().toUpperCase();
+    let priceStr = (row[3] || '').toString().trim();
+    const description = (row[4] || '').toString().trim();
     
-    if (format === 'new') {
-      // New format: A=Name, B=Price, G=Size (comma-separated), H=Available
-      itemName = (row[0] || '').trim();
-      if (!itemName) return;
-      
-      // Parse price from column B
-      let priceStr = (row[1] || '').toString().trim();
-      priceStr = priceStr.replace(/^\$/, '');
-      price = parseFloat(priceStr) || 0;
-      
-      // Parse sizes from column G (index 6) - can be "Small, Medium, Large" or single size
-      const sizeStr = (row[6] || 'regular').toString().trim();
-      const sizes = sizeStr.includes(',') 
-        ? sizeStr.split(',').map(s => s.trim().toLowerCase())
-        : [sizeStr.toLowerCase() || 'regular'];
-      
-      // Category from item name (extract if it contains category info)
-      category = 'Other';
-      if (itemName.toLowerCase().includes('pizza')) category = 'Pizza';
-      else if (itemName.toLowerCase().includes('salad')) category = 'Salad';
-      else if (itemName.toLowerCase().includes('sub') || itemName.toLowerCase().includes('gyro')) category = 'Subs & Gyros';
-      else if (itemName.toLowerCase().includes('burger')) category = 'Burgers';
-      else if (itemName.toLowerCase().includes('tender') || itemName.toLowerCase().includes('wing')) category = 'Chicken';
-      else if (itemName.toLowerCase().includes('fries') || itemName.toLowerCase().includes('stick') || itemName.toLowerCase().includes('ring')) category = 'Sides';
-      
-      // Available from column H (index 7) or assume true
-      const availableStr = (row[7] || '').toString().trim().toLowerCase();
-      available = availableStr === '' || availableStr === 'true' || availableStr === 'yes' || availableStr === 'as listed';
-      
-      if (!available) return;
-      
-      // Create menu entry for each size
-      const baseItemName = itemName.toLowerCase();
-      sizes.forEach(sizeOption => {
-        if (!menu[baseItemName]) {
-          menu[baseItemName] = {
-            sizes: [],
-            priceMap: {},
-            category: category
-          };
-        }
-        if (!menu[baseItemName].sizes.includes(sizeOption)) {
-          menu[baseItemName].sizes.push(sizeOption);
-        }
-        // Use same price for all sizes (or you could adjust if needed)
-        menu[baseItemName].priceMap[sizeOption] = price;
-      });
-      
-    } else {
-      // Old format: A=Name, B=Size, C=Price, D=Category, E=Available
-      itemName = (row[0] || '').trim().toLowerCase();
-      size = (row[1] || 'regular').trim().toLowerCase();
-      let priceStr = (row[2] || '').toString().trim();
-      priceStr = priceStr.replace(/^\$/, '');
-      price = parseFloat(priceStr) || 0;
-      category = (row[3] || 'Other').trim();
-      available = row[4] === undefined || row[4] === '' || 
-                   row[4].toString().toLowerCase() === 'true' || 
-                   row[4].toString().toLowerCase() === 'yes' ||
-                   row[4] === true;
-
-      // Skip if item is not available
-      if (!available) {
-        console.log(`⚠️  Skipping unavailable item: ${itemName} (${size})`);
-        return;
-      }
-
-      if (!itemName) {
-        console.warn(`⚠️  Skipping invalid row ${index + 2}: missing item name`);
-        if (index < 5) {
-          console.warn(`   Row data: ${JSON.stringify(row)}`);
-        }
-        return;
-      }
-      
-      // Allow items with price 0 (might be free items or pricing to be determined)
-      // Only skip if price is truly invalid (NaN after parseFloat)
-      if (isNaN(price) && priceStr !== '0' && priceStr !== '') {
-        console.warn(`⚠️  Skipping invalid row ${index + 2}: invalid price "${row[2]}" for "${itemName}"`);
-        if (index < 5) {
-          console.warn(`   Row data: ${JSON.stringify(row)}`);
-        }
-        return;
-      }
-
-      // Initialize menu item if it doesn't exist
-      if (!menu[itemName]) {
-        menu[itemName] = {
-          sizes: [],
-          priceMap: {},
-          category: category
-        };
-      }
-
-      // Add size and price if not already added
-      if (!menu[itemName].sizes.includes(size)) {
-        menu[itemName].sizes.push(size);
-      }
-      menu[itemName].priceMap[size] = price;
+    // Skip if not in stock
+    if (inStock !== 'YES') {
+      return;
     }
-
+    
+    // Skip if no item name
+    if (!itemName) {
+      return;
+    }
+    
+    // Parse price (remove $ sign)
+    priceStr = priceStr.replace(/^\$/, '');
+    const price = parseFloat(priceStr) || 0;
+    
+    // Normalize item name for menu lookup
+    const baseItemName = itemName.toLowerCase();
+    
+    // Determine available sizes based on item type
+    let sizes = ['regular'];
+    const lowerItem = itemName.toLowerCase();
+    if (lowerItem.includes('pizza') && !lowerItem.includes('create your own')) {
+      sizes = ['regular']; // Most pizzas have one size, use size guide for variations
+    } else if (lowerItem.includes('wings')) {
+      sizes = ['regular'];
+    } else if (lowerItem.includes('salad')) {
+      sizes = ['regular'];
+    } else if (lowerItem.includes('sub') || lowerItem.includes('gyro')) {
+      sizes = ['regular'];
+    }
+    
+    // Create menu entry
+    if (!menu[baseItemName]) {
+      menu[baseItemName] = {
+        sizes: sizes,
+        priceMap: {},
+        category: category,
+        description: description
+      };
+    }
+    
+    // Set price for each size
+    sizes.forEach(size => {
+      menu[baseItemName].priceMap[size] = price;
+    });
+    
     // Track categories for formatting
     if (!menuTextByCategory[category]) {
       menuTextByCategory[category] = [];
@@ -921,7 +887,7 @@ function parseMenuFromSheets(rows) {
   });
 
   // Format menu text for AI prompt
-  const menuText = formatMenuText(menu, menuTextByCategory);
+  const menuText = formatMenuText(menu, menuTextByCategory, toppings, sizeGuide);
   
   const itemCount = Object.keys(menu).length;
   if (itemCount === 0) {
@@ -932,14 +898,80 @@ function parseMenuFromSheets(rows) {
 
   return {
     menu: menu,
-    menuText: menuText
+    menuText: menuText,
+    toppings: toppings,
+    sizeGuide: sizeGuide
   };
+}
+
+/**
+ * Parse toppings from Pizza_Toppings sheet
+ * Format: A=Topping, B=Type, C=Add-on Price, D=Notes
+ */
+function parseToppingsFromSheets(rows) {
+  const toppings = [];
+  
+  rows.forEach((row, index) => {
+    if (!row || row.length < 3) return;
+    
+    const toppingName = (row[0] || '').toString().trim();
+    const type = (row[1] || '').toString().trim();
+    let priceStr = (row[2] || '').toString().trim();
+    const notes = (row[3] || '').toString().trim();
+    
+    if (!toppingName) return;
+    
+    // Parse price
+    priceStr = priceStr.replace(/^\$/, '');
+    const price = parseFloat(priceStr) || 0;
+    
+    toppings.push({
+      name: toppingName,
+      type: type,
+      price: price,
+      notes: notes
+    });
+  });
+  
+  console.log(`📋 Parsed ${toppings.length} toppings`);
+  return toppings;
+}
+
+/**
+ * Parse size guide from Size_Guide sheet
+ * Format: A=Item Type, B=Size, C=Price Modifier or Base Price
+ */
+function parseSizeGuideFromSheets(rows) {
+  const sizeGuide = [];
+  
+  rows.forEach((row, index) => {
+    if (!row || row.length < 2) return;
+    
+    const itemType = (row[0] || '').toString().trim();
+    const size = (row[1] || '').toString().trim();
+    let priceStr = (row[2] || '').toString().trim();
+    
+    if (!itemType || !size) return;
+    
+    // Parse price
+    priceStr = priceStr.replace(/^\$/, '');
+    const price = parseFloat(priceStr) || 0;
+    
+    sizeGuide.push({
+      itemType: itemType,
+      size: size,
+      price: price
+    });
+  });
+  
+  console.log(`📋 Parsed ${sizeGuide.length} size guide entries`);
+  return sizeGuide;
 }
 
 /**
  * Format menu object into text for AI prompt
  */
-function formatMenuText(menu, menuTextByCategory) {
+function formatMenuText(menu, menuTextByCategory, toppings = [], sizeGuide = []) {
   // TOKEN OPTIMIZATION: Compact menu format (removes prices from prompt - prices are in tool/order logic)
   // Group by category first
   const categories = {};
@@ -952,16 +984,49 @@ function formatMenuText(menu, menuTextByCategory) {
       categories[category] = [];
     }
     
-    // OPTIMIZED: Only include sizes, not prices (saves ~30% tokens on menu)
-    const sizes = item.sizes.join(', ');
-    categories[category].push(`${itemName} (${sizes})`);
+    // Include item name and price for customer reference
+    const price = item.priceMap[item.sizes[0]] || 0;
+    categories[category].push(`${itemName} ($${price.toFixed(2)})`);
   });
 
   // Format by category - compact format
   let menuText = '';
   Object.keys(categories).sort().forEach(category => {
-    menuText += `${category}:\n${categories[category].join(', ')}\n`;
+    menuText += `${category}:\n${categories[category].join(', ')}\n\n`;
   });
+
+  // Add toppings section if available
+  if (toppings.length > 0) {
+    const toppingsByType = {};
+    toppings.forEach(t => {
+      const type = t.type || 'Other';
+      if (!toppingsByType[type]) {
+        toppingsByType[type] = [];
+      }
+      toppingsByType[type].push(`${t.name} (+$${t.price.toFixed(2)})`);
+    });
+    
+    menuText += `\nAVAILABLE TOPPINGS:\n`;
+    Object.keys(toppingsByType).forEach(type => {
+      menuText += `${type}: ${toppingsByType[type].join(', ')}\n`;
+    });
+  }
+
+  // Add size guide section if available
+  if (sizeGuide.length > 0) {
+    const sizesByItem = {};
+    sizeGuide.forEach(s => {
+      if (!sizesByItem[s.itemType]) {
+        sizesByItem[s.itemType] = [];
+      }
+      sizesByItem[s.itemType].push(`${s.size} ($${s.price.toFixed(2)})`);
+    });
+    
+    menuText += `\nSIZE OPTIONS:\n`;
+    Object.keys(sizesByItem).forEach(itemType => {
+      menuText += `${itemType}: ${sizesByItem[itemType].join(', ')}\n`;
+    });
+  }
 
   return menuText.trim();
 }
