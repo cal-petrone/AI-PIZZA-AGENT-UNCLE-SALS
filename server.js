@@ -5680,11 +5680,34 @@ wss.on('connection', (ws, req) => {
       console.log('OpenAI connection closed:', code, reason?.toString());
       openaiReady = false; // Mark as not ready when closed
       
+      // CRITICAL: Do NOT close the Twilio call when OpenAI closes - attempt reconnection
+      console.warn('⚠️  OpenAI connection closed - attempting reconnection while keeping call alive...');
+      
       // Only log as error if it was unexpected (not a normal close)
       if (code !== 1000 && code !== 1001) {
-        console.error('⚠ Unexpected OpenAI connection closure - this will stop audio processing!');
+        console.error('⚠ Unexpected OpenAI connection closure - attempting recovery...');
         console.error('Close code:', code);
         console.error('Close reason:', reason?.toString() || 'No reason provided');
+        
+        // CRITICAL: Attempt to reconnect without closing the call
+        if (streamSid === sid) {
+          const currentOrder = activeOrders.get(streamSid) || { items: [] };
+          setTimeout(() => {
+            // Attempt to reconnect if connection is closed
+            if (!openaiClient || openaiClient.readyState !== WebSocket.OPEN) {
+              console.log('⚠️  Attempting to reconnect OpenAI after close event...');
+              try {
+                connectToOpenAI(streamSid, currentOrder).catch(err => {
+                  console.error('❌ Failed to reconnect OpenAI after close:', err);
+                  // Even if reconnect fails, keep the call alive
+                  console.log('ℹ️  Call remains active - waiting for retry or user interaction');
+                });
+              } catch (e) {
+                console.error('Error attempting reconnection after close:', e);
+              }
+            }
+          }, 2000); // Wait 2 seconds before reconnecting
+        }
         
         // Common error codes:
         // 1006: Abnormal closure (connection lost)
