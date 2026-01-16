@@ -3770,7 +3770,8 @@ wss.on('connection', (ws, req) => {
                 let responseText;
                 let isWingsItem = false;
                 
-                if (lookupResult.matched && lookupResult.description) {
+                // CRITICAL: Check for matched item first (even if description is empty)
+                if (lookupResult.matched && lookupResult.itemName) {
                   const itemData = menu[lookupResult.itemName];
                   const category = itemData?.category?.toLowerCase() || '';
                   const itemNameLower = lookupResult.itemName.toLowerCase();
@@ -3778,22 +3779,62 @@ wss.on('connection', (ws, req) => {
                   // Check if this is a wings item
                   isWingsItem = category.includes('wing') || itemNameLower.includes('wing');
                   
-                  // Build response with EXACT description from Column E
-                  responseText = `The ${lookupResult.itemName}? ${lookupResult.description}`;
+                  // CRITICAL: If Column E is empty, say "no description listed"
+                  if (!lookupResult.description || lookupResult.description.trim() === '') {
+                    // Column E is empty - tell customer no description listed
+                    responseText = `I don't have a description listed for that item. I can tell you the price or help you choose something similar.`;
+                    console.log(`⚠️ DESCRIPTION EMPTY for "${lookupResult.itemName}" - telling customer no description listed`);
+                    
+                    // #region agent log
+                    fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:description_handler:empty',message:'DESCRIPTION_EMPTY',data:{itemName:lookupResult.itemName,rowIndex:'N/A',descriptionFromSheet:'EMPTY',action:'told_customer_no_description_listed'},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H_description_empty'})}).catch(()=>{});
+                    // #endregion
+                  } else {
+                    // CRITICAL: Use EXACT description from Column E - word for word
+                    responseText = `The ${lookupResult.itemName}? ${lookupResult.description}`;
+                    
+                    // Add wings flavor question if applicable
+                    if (isWingsItem) {
+                      responseText += ` What flavor of wings would you like?`;
+                      console.log('🍗 Wings item detected - added flavor question');
+                      
+                      // #region agent log
+                      fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:description_handler:wings',message:'WING_FLAVOR_PROMPT_TRIGGERED',data:{itemName:lookupResult.itemName,descriptionReturned:lookupResult.description.substring(0,100)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'I_wings'})}).catch(()=>{});
+                      // #endregion
+                    }
+                    
+                    console.log(`✅ MATCHED: "${lookupResult.itemName}" => Using EXACT description from Column E: "${lookupResult.description.substring(0, 100)}..."`);
+                    
+                    // #region agent log
+                    fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:description_handler:matched',message:'DESCRIPTION_RETURNED_FROM_SHEET',data:{userQuery:data.transcript,normalizedQuery:itemQuery,matchedItemName:lookupResult.itemName,rowIndex:'N/A',descriptionFromSheet:lookupResult.description,descriptionLength:lookupResult.description.length,exactDescriptionUsed:true},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'G_description_guardrail'})}).catch(()=>{});
+                    // #endregion
+                  }
+                } else if (lookupResult.alternatives.length > 0) {
+                  // Multiple matches - ask for clarification
+                  const alternativesList = lookupResult.alternatives.slice(0, 3).join(', ');
+                  responseText = `I don't see that exact item on our menu. Did you mean ${alternativesList}?`;
+                  console.log(`⚠️ NO EXACT MATCH - Suggesting: ${alternativesList}`);
                   
-                  // Add wings flavor question if applicable
-                  if (isWingsItem) {
-                    responseText += ` What flavor of wings would you like?`;
-                    console.log('🍗 Wings item detected - added flavor question');
+                  // #region agent log
+                  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:description_handler:multiple',message:'MULTIPLE_MATCHES',data:{userQuery:data.transcript,normalizedQuery:itemQuery,alternatives:lookupResult.alternatives,action:'asking_clarification'},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'E_lookup'})}).catch(()=>{});
+                  // #endregion
+                } else {
+                  // No match found - say it's not on the menu (NO description)
+                  const suggestions = Object.keys(menu).filter(item => {
+                    const itemLower = item.toLowerCase();
+                    return itemQuery.split(' ').some(word => word.length > 2 && itemLower.includes(word));
+                  }).slice(0, 3);
+                  
+                  if (suggestions.length > 0) {
+                    responseText = `I don't see that item on our menu. Did you mean ${suggestions.join(', ')}?`;
+                  } else {
+                    responseText = `I don't see that item on our menu. Can I help you with something else?`;
                   }
                   
-                  console.log(`✅ MATCHED: "${lookupResult.itemName}" => "${lookupResult.description.substring(0, 100)}..."`);
-                } else if (lookupResult.alternatives.length > 0) {
-                  responseText = `I don't see that exact item on our menu. Did you mean the ${lookupResult.alternatives[0]}?`;
-                  console.log(`⚠️ NO EXACT MATCH - Suggesting: ${lookupResult.alternatives.join(', ')}`);
-                } else {
-                  responseText = `I don't see that item on our menu. Would you like me to tell you about something else?`;
-                  console.log(`❌ NO MATCH FOUND for "${itemQuery}"`);
+                  console.log(`❌ NO MATCH FOUND for "${itemQuery}" - no description provided`);
+                  
+                  // #region agent log
+                  fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:description_handler:no_match',message:'NO_MATCH_FOUND',data:{userQuery:data.transcript,normalizedQuery:itemQuery,suggestions:suggestions,action:'told_customer_not_listed',descriptionProvided:false},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'E_lookup'})}).catch(()=>{});
+                  // #endregion
                 }
                 
                 // #region agent log
