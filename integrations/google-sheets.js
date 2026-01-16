@@ -277,23 +277,56 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
       });
       
       // CRITICAL: Use SINGLE SOURCE OF TRUTH for totals
-      // If totals are stored in order state (from spoken total), use those
+      // Use order.finalTotal if available (this is what was spoken to customer)
       // Otherwise calculate using the same function as spoken totals
       let totals;
-      if (order.totals && typeof order.totals.total === 'number') {
-        // Use stored totals from order state - this is what was spoken to customer
+      let finalTotalValue;
+      
+      // CRITICAL: Use order.finalTotal if available (single source of truth)
+      if (order.finalTotal !== undefined && typeof order.finalTotal === 'number' && order.finalTotal > 0) {
+        finalTotalValue = order.finalTotal;
+        // Reconstruct totals object from finalTotal
+        const taxRate = parseFloat(storeConfig.taxRate) || 0.08;
+        // Reverse calculate: total = subtotal + tax, tax = subtotal * taxRate
+        // So: total = subtotal * (1 + taxRate)
+        // subtotal = total / (1 + taxRate)
+        const subtotal = finalTotalValue / (1 + taxRate);
+        const tax = finalTotalValue - subtotal;
+        totals = {
+          subtotal: Math.round(subtotal * 100) / 100,
+          tax: Math.round(tax * 100) / 100,
+          total: finalTotalValue
+        };
+        console.log('📊 LOGGED_TOTAL: Using order.finalTotal (single source of truth):', JSON.stringify(totals));
+      } else if (order.totals && typeof order.totals.total === 'number') {
+        // Fallback to stored totals
         totals = order.totals;
+        finalTotalValue = totals.total;
         console.log('📊 LOGGED_TOTAL: Using stored totals from order state:', JSON.stringify(totals));
       } else {
         // Calculate using same function as spoken totals
         const taxRate = parseFloat(storeConfig.taxRate) || 0.08; // 8% NYS tax
         totals = calculateOrderTotals(order.items, taxRate);
+        finalTotalValue = totals.total;
         // Store in order for consistency
         order.totals = totals;
+        order.finalTotal = finalTotalValue;
         console.log('📊 LOGGED_TOTAL: Calculated new totals:', JSON.stringify(totals));
       }
       
       console.log(`📊 LOGGED_TOTAL: Subtotal: $${totals.subtotal.toFixed(2)} + Tax: $${totals.tax.toFixed(2)} = Total: $${finalTotalValue.toFixed(2)}`);
+      
+      // CRITICAL: Log final total for debugging - this matches what was spoken
+      console.log('💰💰💰 FINAL_TOTAL_LOGGED:', finalTotalValue, JSON.stringify({
+        orderFinalTotal: order.finalTotal,
+        totalsTotal: totals.total,
+        orderItems: order.items?.map(i => ({
+          name: i.name,
+          quantity: i.quantity,
+          unitPrice: i.unitPrice || i.price,
+          lineTotal: i.lineTotal
+        }))
+      }));
       
       // CRITICAL: Consistency check - spoken total must equal logged total
       console.log('💰💰💰 TOTAL_CHECK:', JSON.stringify({
