@@ -669,9 +669,14 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
       pickupOrDelivery: order.deliveryMethod || 'NOT_SET',
       deliveryAddress: order.address || 'NOT_SET',
       phone: order.customerPhone || 'NOT_SET',
-      finalTotal: totals.total || 0,
+      finalTotal: finalTotalValue || order.finalTotal || totals.total || 0,
       orderItemsCount: order.items?.length || 0,
-      orderItems: order.items?.map(i => ({ name: i.name, qty: i.quantity, price: i.price }))
+      orderItems: order.items?.map(i => ({ 
+        name: i.name, 
+        qty: i.quantity, 
+        unitPrice: i.unitPrice || i.price,
+        lineTotal: i.lineTotal
+      }))
     }, null, 2));
     
     // ============================================================
