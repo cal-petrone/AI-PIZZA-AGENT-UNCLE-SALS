@@ -2892,10 +2892,11 @@ wss.on('connection', (ws, req) => {
                   };
                   
                   if (safeSendToOpenAI(cancelPayload, 'response.cancel (post-greeting silence)')) {
-                    console.log('✓ Response cancelled - blocking random response after greeting');
+                    console.log('✓ Response cancel sent - blocking random response after greeting');
                     responseInProgress = false;
                   } else {
-                    console.error('❌ Failed to cancel response during post-greeting silence');
+                    // Failed to send cancel - this is OK, response might already be complete
+                    console.log('ℹ️  Could not send response.cancel - response may already be complete (safe to ignore)');
                     responseInProgress = false;
                   }
                 }
@@ -2913,13 +2914,14 @@ wss.on('connection', (ws, req) => {
                 };
                 
                 if (safeSendToOpenAI(cancelPayload, 'response.cancel (user speaking)')) {
-                  console.log('✓ Response cancelled - user is speaking');
+                  console.log('✓ Response cancel sent - user is speaking');
                   responseInProgress = false;
                   console.log('✓ responseInProgress reset after cancellation');
                 } else {
-                  console.error('❌ Failed to cancel response');
+                  // Failed to send cancel - this is OK, response might already be complete
+                  console.log('ℹ️  Could not send response.cancel - response may already be complete (safe to ignore)');
                   responseInProgress = false; // Reset flag anyway
-                  console.log('✓ responseInProgress reset after cancellation (fallback)');
+                  console.log('✓ responseInProgress reset (response may have already finished)');
                 }
               }
               return; // Exit early - do NOT allow this response
@@ -5547,6 +5549,29 @@ wss.on('connection', (ws, req) => {
             console.error('✗✗✗ OpenAI error event received ✗✗✗');
             console.error('Error data:', JSON.stringify(data, null, 2));
             
+            // CRITICAL: Handle non-fatal errors gracefully - DO NOT disconnect the call
+            const errorCode = data.error?.code;
+            const errorType = data.error?.type;
+            
+            // NON-FATAL ERRORS: These should NOT cause the call to hang up
+            const nonFatalErrors = [
+              'response_cancel_not_active', // Trying to cancel a response that isn't active - harmless
+              'rate_limit_exceeded', // Rate limit - can retry
+              'invalid_request_error' // Some invalid requests are non-fatal
+            ];
+            
+            if (errorCode && nonFatalErrors.includes(errorCode)) {
+              console.log(`⚠️  NON-FATAL ERROR (${errorCode}): Ignoring - call continues normally`);
+              if (errorCode === 'response_cancel_not_active') {
+                console.log('ℹ️  This happens when trying to cancel a response that already completed - safe to ignore');
+              }
+              // DO NOT break - continue processing, call stays alive
+              break;
+            }
+            
+            // FATAL ERRORS: Attempt recovery but keep call alive
+            console.warn('⚠️  FATAL ERROR detected - attempting recovery while keeping call alive...');
+            
             // CRITICAL: Do NOT end the call on error - attempt recovery
             // Try to reconnect OpenAI and continue the call
             if (streamSid === sid) {
@@ -5562,14 +5587,11 @@ wss.on('connection', (ws, req) => {
                       // Even if reconnect fails, keep the call alive and send fallback TwiML
                       if (ws && ws.readyState === WebSocket.OPEN) {
                         try {
-                          ws.send(JSON.stringify({
-                            event: 'stop',
-                            streamSid: sid
-                          }));
-                          // Send fallback TwiML to keep call alive
-                          // The call handler will reconnect when user speaks again
+                          // DO NOT send 'stop' event - that would hang up the call!
+                          // Instead, keep the call alive and wait for user to speak again
+                          console.log('ℹ️  Call remains active - waiting for user to speak again');
                         } catch (e) {
-                          console.error('Error sending stop event:', e);
+                          console.error('Error handling failed reconnection:', e);
                         }
                       }
                     });
@@ -5582,7 +5604,7 @@ wss.on('connection', (ws, req) => {
               }, 1000);
             }
             
-            // DO NOT break - continue processing other events
+            // DO NOT break - continue processing other events, call stays alive
             break;
             
           default:
