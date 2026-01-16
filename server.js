@@ -5640,8 +5640,30 @@ wss.on('connection', (ws, req) => {
       console.error('✗✗✗ OpenAI WebSocket error:', error);
       console.error('Error details:', error.message, error.code);
       console.error('Error stack:', error.stack);
-      console.error('This will prevent audio processing and API usage!');
+      
+      // CRITICAL: Do NOT close the call on WebSocket errors - attempt recovery
+      console.warn('⚠️  WebSocket error detected - attempting recovery while keeping call alive...');
       openaiReady = false; // Mark as not ready on error
+      
+      // CRITICAL: Try to reconnect without closing the call
+      if (streamSid === sid) {
+        const currentOrder = activeOrders.get(streamSid) || { items: [] };
+        setTimeout(() => {
+          // Attempt to reconnect if connection is closed
+          if (!openaiClient || openaiClient.readyState !== WebSocket.OPEN) {
+            console.log('⚠️  Attempting to reconnect OpenAI WebSocket after error...');
+            try {
+              connectToOpenAI(streamSid, currentOrder).catch(err => {
+                console.error('❌ Failed to reconnect OpenAI WebSocket:', err);
+                // Even if reconnect fails, keep the call alive
+                console.log('ℹ️  Call remains active - waiting for retry or user interaction');
+              });
+            } catch (e) {
+              console.error('Error attempting WebSocket reconnection:', e);
+            }
+          }
+        }, 2000); // Wait 2 seconds before reconnecting
+      }
       
       // Try to provide feedback to caller if possible
       try {
