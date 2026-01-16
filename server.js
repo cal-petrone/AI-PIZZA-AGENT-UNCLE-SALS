@@ -601,17 +601,25 @@ function lookupMenuItemDescription(menu, query) {
   
   // Return exact match if found
   if (exactMatch) {
-    const description = exactMatch.data.description || '';
-    console.log(`✅ EXACT MATCH: "${exactMatch.name}" => Description: "${description.substring(0, 100)}..."`);
+    // CRITICAL: Get description from Column E - must be from the menu data
+    // If description is empty/null/undefined, return empty string (do NOT invent description)
+    const description = (exactMatch.data.description && typeof exactMatch.data.description === 'string') 
+      ? exactMatch.data.description.trim() 
+      : '';
+    
+    const hasDescription = description.length > 0;
+    console.log(`✅ EXACT MATCH: "${exactMatch.name}" => Has description: ${hasDescription}${hasDescription ? ` => "${description.substring(0, 100)}..."` : ' (EMPTY - will tell customer no description listed)'}`);
     
     // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:lookupMenuItemDescription:exactMatch',message:'EXACT_MATCH_FOUND',data:{itemName:exactMatch.name,hasDescription:!!description,descriptionPreview:description.substring(0,150)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'E_lookup'})}).catch(()=>{});
+    fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:lookupMenuItemDescription:exactMatch',message:'EXACT_MATCH_FOUND',data:{itemName:exactMatch.name,rowIndex:'N/A',hasDescription:hasDescription,descriptionValue:description||'EMPTY',descriptionPreview:description.substring(0,150)||'NONE'},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'E_lookup'})}).catch(()=>{});
     // #endregion
     
+    // CRITICAL: Return empty string if no description - caller will handle "no description listed" message
+    // DO NOT return "No description available" here - that would be inventing text
     return {
       matched: true,
       itemName: exactMatch.name,
-      description: description || 'No description available for this item.',
+      description: description, // Empty string if Column E is empty - caller handles messaging
       alternatives: []
     };
   }
@@ -622,17 +630,24 @@ function lookupMenuItemDescription(menu, query) {
   // If we have a clear best match (significantly better than others)
   if (partialMatches.length === 1 || (partialMatches.length > 1 && partialMatches[0].score > partialMatches[1].score * 1.5)) {
     const bestMatch = partialMatches[0];
-    const description = bestMatch.data.description || '';
-    console.log(`✅ BEST MATCH: "${bestMatch.name}" => Description: "${description.substring(0, 100)}..."`);
+    // CRITICAL: Get description from Column E - must be from the menu data
+    // If description is empty/null/undefined, return empty string (do NOT invent description)
+    const description = (bestMatch.data.description && typeof bestMatch.data.description === 'string') 
+      ? bestMatch.data.description.trim() 
+      : '';
+    
+    const hasDescription = description.length > 0;
+    console.log(`✅ BEST MATCH: "${bestMatch.name}" => Has description: ${hasDescription}${hasDescription ? ` => "${description.substring(0, 100)}..."` : ' (EMPTY - will tell customer no description listed)'}`);
     
     // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:lookupMenuItemDescription:bestMatch',message:'BEST_MATCH_FOUND',data:{itemName:bestMatch.name,hasDescription:!!description,descriptionPreview:description.substring(0,150),score:bestMatch.score},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'E_lookup'})}).catch(()=>{});
+    fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:lookupMenuItemDescription:bestMatch',message:'BEST_MATCH_FOUND',data:{itemName:bestMatch.name,rowIndex:'N/A',hasDescription:hasDescription,descriptionValue:description||'EMPTY',descriptionPreview:description.substring(0,150)||'NONE',score:bestMatch.score},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'E_lookup'})}).catch(()=>{});
     // #endregion
     
+    // CRITICAL: Return empty string if no description - caller will handle "no description listed" message
     return {
       matched: true,
       itemName: bestMatch.name,
-      description: description || 'No description available for this item.',
+      description: description, // Empty string if Column E is empty - caller handles messaging
       alternatives: []
     };
   }
@@ -4827,12 +4842,23 @@ wss.on('connection', (ws, req) => {
                       fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:get_item_description',message:'DESCRIPTION_TOOL_CALLED',data:{itemQuery:itemQuery,matched:lookupResult.matched,itemName:lookupResult.itemName,hasDescription:!!lookupResult.description,descriptionPreview:lookupResult.description?.substring(0,150)||'NONE',alternatives:lookupResult.alternatives},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'F_tool_call'})}).catch(()=>{});
                       // #endregion
                       
-                      // Build the response for the AI
+                      // CRITICAL: Build response with hard guardrail - NEVER invent descriptions
                       let descriptionResponse;
                       if (lookupResult.matched) {
-                        // Return ONLY the description from Column E
-                        descriptionResponse = `ITEM FOUND: "${lookupResult.itemName}"\nDESCRIPTION (use this EXACTLY): ${lookupResult.description}`;
-                        console.log(`✅ Description found for "${lookupResult.itemName}": ${lookupResult.description.substring(0, 100)}...`);
+                        // CRITICAL: If Column E is empty, do NOT invent description
+                        if (!lookupResult.description || lookupResult.description.trim() === '') {
+                          // Column E is empty - tell AI to say "no description listed"
+                          descriptionResponse = `ITEM FOUND: "${lookupResult.itemName}"\nDESCRIPTION: NO DESCRIPTION LISTED\n\nYOU MUST SAY EXACTLY THIS: "I don't have a description listed for that item. I can tell you the price or help you choose something similar."\n\nDO NOT invent a description. DO NOT use general knowledge. DO NOT say what it "usually has".`;
+                          console.log(`⚠️ Description EMPTY for "${lookupResult.itemName}" - AI will tell customer no description listed`);
+                        } else {
+                          // CRITICAL: Return ONLY the description from Column E - word for word
+                          descriptionResponse = `ITEM FOUND: "${lookupResult.itemName}"\nDESCRIPTION FROM MENU SHEET (use this EXACTLY, word-for-word): ${lookupResult.description}\n\nCRITICAL RULES:\n- Use ONLY the description provided above\n- Do NOT add any ingredients or details not in the description\n- Do NOT say "it usually has" or use general food knowledge\n- Do NOT paraphrase - use the exact text from the menu sheet`;
+                          console.log(`✅ Description found for "${lookupResult.itemName}": ${lookupResult.description.substring(0, 100)}...`);
+                        }
+                        
+                        // #region agent log
+                        fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:get_item_description:matched',message:'DESCRIPTION_RETURNED',data:{itemQuery:itemQuery,matchedItemName:lookupResult.itemName,descriptionFromSheet:lookupResult.description||'EMPTY',descriptionLength:lookupResult.description?.length||0},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'G_description_guardrail'})}).catch(()=>{});
+                        // #endregion
                       } else if (lookupResult.alternatives.length > 0) {
                         // Multiple matches or suggestions - ask for clarification
                         descriptionResponse = `ITEM NOT FOUND: "${itemQuery}" is not on the menu.\nDid you mean one of these? ${lookupResult.alternatives.join(', ')}.\nASK THE CUSTOMER: "I don't see that exact item. Did you mean ${lookupResult.alternatives[0]}?"`;
@@ -4843,13 +4869,13 @@ wss.on('connection', (ws, req) => {
                         console.log(`❌ No match found for "${itemQuery}"`);
                       }
                       
-                      // Send the result back to the AI with instructions to use it
+                      // CRITICAL: Send result with HARD GUARDRAIL - prevent hallucinations
                       safeSendToOpenAI({
                         type: 'session.update',
                         session: {
-                          instructions: `CRITICAL: The customer asked about "${itemQuery}". Here is the ONLY information you may use:\n\n${descriptionResponse}\n\nYou MUST use the description provided above word-for-word. Do NOT add any information not in this description. Do NOT make up ingredients or details.`
+                          instructions: `CRITICAL: The customer asked about "${itemQuery}". Here is the ONLY information you may use:\n\n${descriptionResponse}\n\nHARD GUARDRAIL - DO NOT VIOLATE:\n- If description says "NO DESCRIPTION LISTED" → Say EXACTLY the provided message (no inventing)\n- If description is provided → Use it EXACTLY word-for-word (no additions, no paraphrasing, no extra ingredients)\n- DO NOT use general food knowledge\n- DO NOT say what it "usually has" or "typically contains"\n- DO NOT invent any text not in the description\n- If you cannot find the item → Ask for clarification or say it's not listed (NEVER invent a description)`
                         }
-                      }, 'description lookup result');
+                      }, 'description lookup result with guardrail');
                       
                       // Trigger a response
                       setTimeout(() => {
