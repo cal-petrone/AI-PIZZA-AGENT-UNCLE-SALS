@@ -22,7 +22,7 @@ let spreadsheetId = null;
 /**
  * Calculate order totals - SINGLE SOURCE OF TRUTH
  * Used by both spoken confirmation and Google Sheets logging
- * @param {Array} items - Order items array
+ * @param {Array} items - Order items array with price and quantity
  * @param {number} taxRate - Tax rate (default 0.08 for 8% NYS tax)
  * @returns {Object} { subtotal, tax, total }
  */
@@ -33,9 +33,24 @@ function calculateOrderTotals(items, taxRate = 0.08) {
   
   let subtotal = 0;
   items.forEach(item => {
-    const itemPrice = parseFloat(item.price) || 0;
-    const quantity = parseInt(item.quantity) || 1;
-    const itemTotal = itemPrice * quantity;
+    // CRITICAL: Use lineTotal if available, otherwise calculate from unitPrice * quantity
+    let itemTotal = 0;
+    if (item.lineTotal !== undefined && item.lineTotal !== null) {
+      // Item already has lineTotal calculated
+      itemTotal = parseFloat(item.lineTotal) || 0;
+    } else {
+      // Calculate lineTotal from unitPrice (or price fallback) * quantity
+      const unitPrice = parseFloat(item.unitPrice || item.price) || 0;
+      const quantity = parseInt(item.quantity) || 1;
+      itemTotal = unitPrice * quantity;
+      
+      // Store lineTotal on item for consistency
+      item.lineTotal = itemTotal;
+      // Also ensure unitPrice is stored
+      if (!item.unitPrice && item.price) {
+        item.unitPrice = parseFloat(item.price);
+      }
+    }
     subtotal += itemTotal;
   });
   
@@ -49,7 +64,22 @@ function calculateOrderTotals(items, taxRate = 0.08) {
   };
 }
 
-// Export for use in server.js (will be combined with other exports at end of file)
+/**
+ * Compute final total from order items - SINGLE SOURCE OF TRUTH
+ * This is the ONLY function that should compute totals
+ * @param {Array} orderItems - Order items with unitPrice and quantity
+ * @returns {number} Final total (including tax)
+ */
+function computeFinalTotal(orderItems) {
+  if (!orderItems || orderItems.length === 0) {
+    return 0;
+  }
+  
+  const totals = calculateOrderTotals(orderItems, 0.08);
+  return totals.total;
+}
+
+// Note: calculateOrderTotals and computeFinalTotal will be exported in module.exports at end of file
 
 /**
  * Initialize Google Sheets client
@@ -263,14 +293,19 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
         console.log('📊 LOGGED_TOTAL: Calculated new totals:', JSON.stringify(totals));
       }
       
-      console.log(`📊 LOGGED_TOTAL: Subtotal: $${totals.subtotal.toFixed(2)} + Tax: $${totals.tax.toFixed(2)} = Total: $${totals.total.toFixed(2)}`);
+      console.log(`📊 LOGGED_TOTAL: Subtotal: $${totals.subtotal.toFixed(2)} + Tax: $${totals.tax.toFixed(2)} = Total: $${finalTotalValue.toFixed(2)}`);
       
       // CRITICAL: Consistency check - spoken total must equal logged total
       console.log('💰💰💰 TOTAL_CHECK:', JSON.stringify({
-        spokenTotal: order.totals?.total || totals.total,
-        sheetTotal: totals.total,
-        orderItems: order.items.map(i => ({ name: i.name, qty: i.quantity, price: i.price })),
-        totalsMatch: (order.totals?.total || totals.total) === totals.total
+        spokenTotal: order.finalTotal || order.totals?.total || totals.total,
+        sheetTotal: finalTotalValue,
+        orderItems: order.items.map(i => ({ 
+          name: i.name, 
+          qty: i.quantity, 
+          unitPrice: i.unitPrice || i.price,
+          lineTotal: i.lineTotal
+        })),
+        totalsMatch: (order.finalTotal || order.totals?.total || totals.total) === finalTotalValue
       }));
       
       // Format items as string - MUST include ALL details for wings and other items
@@ -499,9 +534,9 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
       validatedTime = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
     }
     
-    // Column F: Price (formatted with $ sign) - use totals.total from shared calculation
-    const validatedPrice = (typeof totals.total === 'number' && !isNaN(totals.total) && totals.total >= 0) 
-      ? `$${totals.total.toFixed(2)}`
+    // Column F: Price (formatted with $ sign) - use finalTotalValue (single source of truth)
+    const validatedPrice = (typeof finalTotalValue === 'number' && !isNaN(finalTotalValue) && finalTotalValue >= 0) 
+      ? `$${finalTotalValue.toFixed(2)}`
       : '$0.00';
     
     // Column G: Order Details (capitalized)
@@ -813,10 +848,11 @@ async function initializeSheetHeaders() {
 }
 
 module.exports = {
+  calculateOrderTotals, // SINGLE SOURCE OF TRUTH for order totals
+  computeFinalTotal, // Compute final total from order items
   initializeGoogleSheets,
   logOrderToGoogleSheets,
   initializeSheetHeaders,
   formatPhoneNumber,
-  calculateOrderTotals, // SINGLE SOURCE OF TRUTH for order totals
 };
 

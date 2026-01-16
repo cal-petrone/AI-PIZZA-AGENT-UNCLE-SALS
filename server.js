@@ -259,8 +259,8 @@ function shouldDebounceResponse(streamSid) {
   return false;
 }
 
-// Import shared calculation function from google-sheets.js
-const { calculateOrderTotals } = require('./integrations/google-sheets');
+// Import shared calculation functions from google-sheets.js
+const { calculateOrderTotals, computeFinalTotal } = require('./integrations/google-sheets');
 
 /**
  * Calculate exact order total from items (with 8% NYS tax)
@@ -285,15 +285,64 @@ function calculateOrderTotal(order) {
 /**
  * Get totals from order - use stored totals if available, otherwise calculate and store
  * This ensures we always use the same calculated total for both speaking and logging
+ * CRITICAL: Also ensures order.finalTotal is set (single source of truth)
  */
 function getOrderTotals(order) {
-  // If totals already calculated and stored, use them
-  if (order.totals && typeof order.totals.total === 'number') {
+  // GUARDRAIL: If orderItems is empty, do not calculate total
+  if (!order.items || order.items.length === 0) {
+    console.warn('⚠️  GUARDRAIL: Cannot calculate total - orderItems is empty');
+    order.finalTotal = 0;
+    order.totals = { subtotal: 0, tax: 0, total: 0 };
     return order.totals;
   }
   
-  // Otherwise calculate and store
-  return calculateOrderTotal(order);
+  // GUARDRAIL: Check if any item is missing resolved unitPrice
+  const itemsWithMissingPrice = order.items.filter(item => {
+    const hasPrice = (item.unitPrice !== undefined && item.unitPrice !== null && item.unitPrice > 0) ||
+                     (item.price !== undefined && item.price !== null && item.price > 0);
+    return !hasPrice;
+  });
+  
+  if (itemsWithMissingPrice.length > 0) {
+    console.warn('⚠️  GUARDRAIL: Cannot calculate total - items missing resolved price:', 
+      itemsWithMissingPrice.map(i => i.name));
+    // Try to use existing totals if available, otherwise return 0
+    if (order.totals && typeof order.totals.total === 'number') {
+      order.finalTotal = order.totals.total;
+      return order.totals;
+    }
+    order.finalTotal = 0;
+    order.totals = { subtotal: 0, tax: 0, total: 0 };
+    return order.totals;
+  }
+  
+  // If totals already calculated and stored, use them
+  if (order.totals && typeof order.totals.total === 'number' && order.finalTotal !== undefined) {
+    return order.totals;
+  }
+  
+  // CRITICAL: Ensure all items have unitPrice and lineTotal before calculating
+  order.items.forEach(item => {
+    // Set unitPrice from price if not already set
+    if (!item.unitPrice && item.price !== undefined && item.price !== null) {
+      item.unitPrice = parseFloat(item.price) || 0;
+    }
+    
+    // Calculate lineTotal if not already set
+    if (item.lineTotal === undefined || item.lineTotal === null) {
+      const unitPrice = item.unitPrice || 0;
+      const quantity = parseInt(item.quantity) || 1;
+      item.lineTotal = unitPrice * quantity;
+    }
+  });
+  
+  // Calculate and store totals
+  const totals = calculateOrderTotal(order);
+  
+  // CRITICAL: Store finalTotal (single source of truth)
+  order.finalTotal = totals.total;
+  
+  return totals;
 }
 
 /**
@@ -312,8 +361,20 @@ function createConversationSummary(order) {
   // If totals are stored, use them; otherwise calculate and store
   const totals = getOrderTotals(order);
   
+  // CRITICAL: Use finalTotal if available, otherwise use totals.total
+  const finalTotalValue = order.finalTotal !== undefined ? order.finalTotal : totals.total;
+  
   // CRITICAL: Log spoken total for debugging - this is what will be announced
-  console.log('💰 SPOKEN_TOTAL:', totals.total, JSON.stringify(totals));
+  console.log('💰💰💰 FINAL_TOTAL_SPOKEN:', finalTotalValue, JSON.stringify({
+    finalTotal: order.finalTotal,
+    totalsTotal: totals.total,
+    orderItems: order.items?.map(i => ({
+      name: i.name,
+      quantity: i.quantity,
+      unitPrice: i.unitPrice || i.price,
+      lineTotal: i.lineTotal
+    }))
+  }));
   
   // #region agent log
   fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:createConversationSummary',message:'SPOKEN_TOTAL_CALCULATED',data:{itemsCount:order.items?.length||0,items:items,subtotal:totals.subtotal,tax:totals.tax,total:totals.total,orderTotalsStored:!!order.totals},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'R_total_unification'})}).catch(()=>{});
@@ -322,8 +383,9 @@ function createConversationSummary(order) {
   // Ultra-compact format to save tokens
   const parts = [];
   parts.push(`Items: ${items}`);
-  if (order.items?.length > 0 && totals.total > 0) {
-    parts.push(`Total: $${totals.total.toFixed(2)} (exact, includes 8% tax)`);
+  if (order.items?.length > 0 && finalTotalValue > 0) {
+    // CRITICAL: Use finalTotal (single source of truth)
+    parts.push(`Total: $${finalTotalValue.toFixed(2)} (exact, includes 8% tax)`);
   }
   if (order.customerName) parts.push(`Name: ${order.customerName}`);
   if (order.deliveryMethod) parts.push(`Method: ${order.deliveryMethod}`);
@@ -4177,11 +4239,19 @@ wss.on('connection', (ws, req) => {
                         }
                       } else {
                         // Add new item with ALL details for proper logging
+                        // CRITICAL: Resolve unitPrice from sheets (wings from Wing_Options, others from Menu_Items)
+                        const resolvedUnitPrice = isWingsItem ? wingPrice : itemPrice;
+                        
+                        // CRITICAL: Calculate lineTotal immediately
+                        const lineTotal = resolvedUnitPrice * finalQuantity;
+                        
                         const newItem = {
                           name: itemName,
                           size: isWingsItem ? 'regular' : (size || 'regular'), // Wings don't use size, they use pieceCount
                           quantity: finalQuantity, // Use corrected quantity
-                          price: isWingsItem ? wingPrice : itemPrice, // Use wing price for wings
+                          price: resolvedUnitPrice, // Keep for backward compatibility
+                          unitPrice: resolvedUnitPrice, // CRITICAL: Store unitPrice (single source of truth)
+                          lineTotal: lineTotal, // CRITICAL: Store lineTotal (quantity * unitPrice)
                           category: menuItemData?.category || 'other'
                         };
                         
