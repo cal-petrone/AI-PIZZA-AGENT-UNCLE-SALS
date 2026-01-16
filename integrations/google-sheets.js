@@ -568,35 +568,94 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
       return false; // Don't log invalid data - this prevents mystery rows
     }
     
-    const row = validatedRow;
+    // ============================================================
+    // FINAL PAYLOAD VALIDATION - ensure all 7 columns are populated
+    // ============================================================
+    const validateLogPayload = (payload) => {
+      const requiredFields = ['name', 'phone', 'deliveryMethod', 'address', 'time', 'price', 'orderDetails'];
+      const missing = requiredFields.filter(field => !payload[field] || payload[field] === '' || payload[field] === undefined || payload[field] === null);
       
-      // ============================================================
-      // CRITICAL DEBUG: Full payload logging before write
-      // ============================================================
-      console.log('');
-      console.log('╔════════════════════════════════════════════════════════════╗');
-      console.log('║       FINAL GOOGLE SHEETS PAYLOAD - WRITING NOW            ║');
-      console.log('╚════════════════════════════════════════════════════════════╝');
-      console.log('📝 FINAL_PHONE:', row[1]);
-      console.log('📝 FINAL_NAME:', row[0]);
-      console.log('📝 FINAL_DELIVERY_METHOD:', row[2]);
-      console.log('📝 FINAL_ADDRESS:', row[3]);
-      console.log('📝 FINAL_TIME:', row[4]);
-      console.log('📝 FINAL_PRICE:', row[5]);
-      console.log('📝 FINAL_ORDER_DETAILS:', row[6]);
-      console.log('📝 FULL_PAYLOAD:', JSON.stringify({
-        name: row[0],
-        phone: row[1],
-        deliveryMethod: row[2],
-        address: row[3],
-        time: row[4],
-        price: row[5],
-        orderDetails: row[6],
-        itemCount: order.items?.length || 0
-      }, null, 2));
-      console.log('📝 RAW_ORDER_ITEMS:', JSON.stringify(order.items, null, 2));
-      console.log('════════════════════════════════════════════════════════════════');
-      console.log('');
+      if (missing.length > 0) {
+        console.error('❌❌❌ VALIDATION FAILED - Missing fields:', missing);
+        console.error('❌ Payload before fix:', JSON.stringify(payload, null, 2));
+        // Fill missing with placeholders
+        if (!payload.name || payload.name === '') payload.name = 'Not provided';
+        if (!payload.phone || payload.phone === '') payload.phone = 'Unknown';
+        if (!payload.deliveryMethod || payload.deliveryMethod === '' || payload.deliveryMethod === '-') {
+          payload.deliveryMethod = 'Pickup';
+        }
+        if (!payload.address || payload.address === '' || payload.address === '-' || payload.address === undefined) {
+          payload.address = payload.deliveryMethod === 'Pickup' ? 'N/A' : 'Address not provided';
+        }
+        if (!payload.time || payload.time === '') {
+          payload.time = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+        }
+        if (!payload.price || payload.price === '') payload.price = '$0.00';
+        if (!payload.orderDetails || payload.orderDetails === '') payload.orderDetails = 'No Items';
+        console.log('✅ Fixed payload with placeholders:', JSON.stringify(payload, null, 2));
+        return false; // Validation failed but fixed
+      }
+      return true; // All fields present
+    };
+    
+    // Build payload object for validation
+    const payload = {
+      name: validatedRow[0],
+      phone: validatedRow[1],
+      deliveryMethod: validatedRow[2],
+      address: validatedRow[3],
+      time: validatedRow[4],
+      price: validatedRow[5],
+      orderDetails: validatedRow[6]
+    };
+    
+    // Validate and fix if needed
+    const isValid = validateLogPayload(payload);
+    
+    // Update validatedRow with any fixes
+    validatedRow[0] = payload.name;
+    validatedRow[1] = payload.phone;
+    validatedRow[2] = payload.deliveryMethod;
+    validatedRow[3] = payload.address;
+    validatedRow[4] = payload.time;
+    validatedRow[5] = payload.price;
+    validatedRow[6] = payload.orderDetails;
+    
+    const row = validatedRow;
+    
+    // ============================================================
+    // CRITICAL DEBUG: STATE AT LOG TIME
+    // ============================================================
+    console.log('');
+    console.log('╔════════════════════════════════════════════════════════════╗');
+    console.log('║              STATE AT LOG TIME - DEBUGGING                 ║');
+    console.log('╚════════════════════════════════════════════════════════╝');
+    console.log('📊 STATE_AT_LOG_TIME:', JSON.stringify({
+      pickupOrDelivery: order.deliveryMethod || 'NOT_SET',
+      deliveryAddress: order.address || 'NOT_SET',
+      phone: order.customerPhone || 'NOT_SET',
+      finalTotal: totals.total || 0,
+      orderItemsCount: order.items?.length || 0,
+      orderItems: order.items?.map(i => ({ name: i.name, qty: i.quantity, price: i.price }))
+    }, null, 2));
+    
+    // ============================================================
+    // CRITICAL DEBUG: FINAL LOG PAYLOAD
+    // ============================================================
+    console.log('');
+    console.log('╔════════════════════════════════════════════════════════════╗');
+    console.log('║       FINAL GOOGLE SHEETS PAYLOAD - WRITING NOW            ║');
+    console.log('╚════════════════════════════════════════════════════════╝');
+    console.log('📝 FINAL_LOG_PAYLOAD:', JSON.stringify(payload, null, 2));
+    console.log('📝 Column A (Name):', row[0]);
+    console.log('📝 Column B (Phone):', row[1]);
+    console.log('📝 Column C (Pick Up/Delivery):', row[2]);
+    console.log('📝 Column D (Delivery Address):', row[3]);
+    console.log('📝 Column E (Time):', row[4]);
+    console.log('📝 Column F (Price):', row[5]);
+    console.log('📝 Column G (Order Details):', row[6]);
+    console.log('════════════════════════════════════════════════════════════');
+    console.log('');
       
       // ============================================================
       // SANITY CHECKS - Prevent bad data from being written
