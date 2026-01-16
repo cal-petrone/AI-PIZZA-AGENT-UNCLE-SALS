@@ -446,32 +446,47 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
     // Column B: Phone - use finalPhoneForSheet (never blank)
     const validatedPhone = finalPhoneForSheet;
     
-    // Column C: Pick Up/Delivery (just "Pickup" or "Delivery", capitalized)
-    // Column D: Delivery Address (address if delivery, "-" if pickup)
-    let validatedDeliveryMethod = '-';
-    let validatedAddress = '-';
+    // ============================================================
+    // CRITICAL: Normalize Pick Up/Delivery - must be "Pickup" or "Delivery"
+    // ============================================================
+    let normalizedDeliveryMethod = null;
+    const deliveryMethodRaw = order.deliveryMethod ? String(order.deliveryMethod).trim().toLowerCase() : '';
     
-    const isValidDeliveryMethod = order.deliveryMethod === 'pickup' || order.deliveryMethod === 'delivery';
+    // Normalize: if it contains "deliver" -> "Delivery", otherwise -> "Pickup"
+    if (deliveryMethodRaw.includes('deliver')) {
+      normalizedDeliveryMethod = 'Delivery';
+    } else if (deliveryMethodRaw === 'pickup' || deliveryMethodRaw === 'pick up' || deliveryMethodRaw === 'pick-up') {
+      normalizedDeliveryMethod = 'Pickup';
+    } else if (deliveryMethodRaw === '' || !deliveryMethodRaw) {
+      // No delivery method provided - default to Pickup for safety
+      console.warn('⚠️  WARNING: No delivery method provided - defaulting to Pickup');
+      normalizedDeliveryMethod = 'Pickup';
+    } else {
+      // Invalid value - default to Pickup
+      console.error('❌ INVALID: Delivery method is not valid:', order.deliveryMethod, '- defaulting to Pickup');
+      normalizedDeliveryMethod = 'Pickup';
+    }
     
-    if (!isValidDeliveryMethod) {
-      console.error('❌ INVALID: Delivery method is not valid (pickup/delivery):', order.deliveryMethod);
-      validatedDeliveryMethod = '-';
-      validatedAddress = '-';
-    } else if (order.deliveryMethod === 'delivery') {
-      validatedDeliveryMethod = 'Delivery';
-      // Format address with capitalization
-      if (order.address && typeof order.address === 'string' && order.address.trim().length > 0) {
+    // Column C: Pick Up/Delivery (MUST be "Pickup" or "Delivery", never blank)
+    const validatedDeliveryMethod = normalizedDeliveryMethod || 'Pickup';
+    
+    // Column D: Delivery Address
+    // IF Pickup: "N/A"
+    // IF Delivery: address || "Address not provided" (never blank)
+    let validatedAddress;
+    if (validatedDeliveryMethod === 'Pickup') {
+      validatedAddress = 'N/A';
+    } else {
+      // Delivery - must have address
+      if (order.address && typeof order.address === 'string' && order.address.trim().length > 0 && order.address.trim() !== 'Address Not Provided') {
         validatedAddress = capitalizeWords(order.address.trim());
       } else {
         console.warn('⚠️  WARNING: Delivery selected but no address provided');
-        validatedAddress = 'Address Not Provided';
+        validatedAddress = 'Address not provided'; // Never blank
       }
-    } else if (order.deliveryMethod === 'pickup') {
-      validatedDeliveryMethod = 'Pickup';
-      validatedAddress = '-';
     }
     
-    console.log('📋 Delivery method:', validatedDeliveryMethod, '| Address:', validatedAddress);
+    console.log('📋 Delivery method normalized:', validatedDeliveryMethod, '| Address:', validatedAddress);
     
     // Validate time format - must include comma and match pattern
     let validatedTime = pickupTimeString;
@@ -514,10 +529,24 @@ async function logOrderToGoogleSheets(order, storeConfig = {}) {
         validatedRow[1] = 'Unknown'; // Force fallback
         return false; // Don't fail, just fix it
       }
-      // Column C (Delivery Method) - must be "Pickup", "Delivery", or "-"
-      if (index === 2 && !['Pickup', 'Delivery', '-'].includes(cell)) {
-        console.error('❌ INVALID: Delivery method is not valid:', cell);
-        return true;
+      // Column C (Delivery Method) - MUST be "Pickup" or "Delivery" (never blank or "-")
+      if (index === 2 && !['Pickup', 'Delivery'].includes(cell)) {
+        console.error('❌ INVALID: Delivery method must be "Pickup" or "Delivery":', cell);
+        // Fix it - default to Pickup
+        validatedRow[2] = 'Pickup';
+        validatedRow[3] = 'N/A'; // Also fix address
+        return false; // Don't fail, just fix it
+      }
+      // Column D (Delivery Address) - MUST NOT be blank
+      if (index === 3 && (!cell || cell === '' || cell === undefined || cell === null || cell === '-')) {
+        console.error('❌❌❌ CRITICAL: Delivery address is BLANK!');
+        // Fix it based on delivery method
+        if (validatedRow[2] === 'Pickup') {
+          validatedRow[3] = 'N/A';
+        } else {
+          validatedRow[3] = 'Address not provided';
+        }
+        return false; // Don't fail, just fix it
       }
       // Column E (Time) - must include comma and match pattern
       if (index === 4 && (!cell.includes(',') || !/^[A-Z][a-z]{2}\s+\d{1,2},\s+\d{1,2}:\d{2}\s+(AM|PM)$/.test(cell))) {
