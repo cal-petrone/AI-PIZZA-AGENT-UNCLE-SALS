@@ -6040,6 +6040,9 @@ wss.on('connection', (ws, req) => {
     }
     
     console.log('✓ Order logging complete');
+    } catch (logOrderError) {
+      console.error('❌ Error in logOrder (non-fatal):', logOrderError?.message || logOrderError);
+    }
   }
   
   ws.on('close', () => {
