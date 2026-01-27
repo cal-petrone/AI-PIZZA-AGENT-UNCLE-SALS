@@ -1141,11 +1141,24 @@ function parseMenuFromSheets(rows, toppings = [], sizeGuide = []) {
     }
     
     // Uncle Sal's format: A=Category, B=Item, C=IN STOCK, D=Price, E=Description
+    // POS Mapping: F=Square Item ID, G=Toast Item ID, H=Clover Item ID
     const category = (row[0] || '').toString().trim();
     const itemName = (row[1] || '').toString().trim();
     const inStock = (row[2] || '').toString().trim().toUpperCase();
     let priceStr = (row[3] || '').toString().trim();
     const description = (row[4] || '').toString().trim();
+    const squareItemId = (row[5] || '').toString().trim();       // Column F (Square Item ID)
+    const toastItemId = (row[6] || '').toString().trim();        // Column G (Toast Item ID)
+    const cloverItemId = (row[7] || '').toString().trim();       // Column H (Clover Item ID)
+    
+    // Debug logging for POS Item ID mappings (first 3 items only)
+    if (index < 3 && (squareItemId || toastItemId || cloverItemId)) {
+      console.log(`📋 POS Item ID Mapping for "${itemName}":`, {
+        squareItemId: squareItemId || 'not mapped',
+        toastItemId: toastItemId || 'not mapped',
+        cloverItemId: cloverItemId || 'not mapped'
+      });
+    }
     
     // #region agent log
     // DEBUG: Log first 5 items with their descriptions to verify parsing
@@ -1230,7 +1243,10 @@ function parseMenuFromSheets(rows, toppings = [], sizeGuide = []) {
         sizes: sizes,
         priceMap: {},
         category: category,
-        description: description
+        description: description,
+        squareItemId: squareItemId || null,      // POS Item ID mapping
+        toastItemId: toastItemId || null,        // POS Item ID mapping
+        cloverItemId: cloverItemId || null       // POS Item ID mapping
       };
     }
     
@@ -2057,6 +2073,7 @@ wss.on('connection', (ws, req) => {
   let userIsSpeaking = false; // CRITICAL: Track if user is currently speaking to prevent interruptions
   let greetingCompletedTimestamp = 0; // CRITICAL: Track when greeting was completed - prevent responses for 3 seconds after greeting
   let postGreetingSilencePeriod = 3000; // Optimized: Reduced to 3 seconds (from 5) for faster response while still preventing random responses
+  let cancelNextResponse = false; // When user said nothing (empty/filler transcript), cancel the upcoming AI response so we don't repeat or talk over silence
   
   console.log('Twilio Media Stream WebSocket connection received');
   console.log('Request URL:', req.url);
@@ -2125,6 +2142,7 @@ wss.on('connection', (ws, req) => {
           userIsSpeaking = false; // Reset user speaking flag
           greetingCompletedTimestamp = 0; // CRITICAL: Reset greeting timestamp
           postGreetingSilencePeriod = 5000; // CRITICAL: 5 seconds of silence after greeting (prevents random responses)
+          cancelNextResponse = false; // Reset empty-transcript cancel flag
           if (audioBufferTimer) {
             clearTimeout(audioBufferTimer);
             audioBufferTimer = null;
@@ -2601,9 +2619,9 @@ wss.on('connection', (ws, req) => {
           // Note: output_audio_transcription is not a valid parameter
           turn_detection: {
             type: 'server_vad',
-            threshold: 0.6, // Optimized: Lower threshold (0.6) - even faster response detection while preventing interruptions
-            prefix_padding_ms: 250,  // Optimized: Reduced padding (250ms) - faster response while preventing cut-offs
-            silence_duration_ms: 500  // CRITICAL: Reduced to 500ms for SUPER FAST, natural responses - maintains natural flow without interruptions
+            threshold: 0.7, // Higher = less sensitive to noise; prevents treating background/breath as "user speaking" or cutting off real speech
+            prefix_padding_ms: 300,  // Include a bit more context before speech start
+            silence_duration_ms: 1100  // CRITICAL: Wait 1.1s of silence before considering user done—never interrupt. Natural pauses are 300–800ms; this ensures caller finishes fully.
           },
           temperature: 0.7,  // Slightly lower for faster, more focused responses
           max_response_output_tokens: TOKEN_BUDGET.MAX_OUTPUT_TOKENS,  // HARD CAP: 150 tokens max per response
@@ -2836,7 +2854,7 @@ wss.on('connection', (ws, req) => {
                         content: [
                           {
                             type: 'input_text',
-                          text: 'The customer just called. You MUST immediately greet them by saying the COMPLETE sentence: "Thanks for calling Uncle Sal\'s Pizza. What would you like to order?" - FINISH THE ENTIRE SENTENCE. After they order something and finish speaking COMPLETELY, ALWAYS confirm what you heard (e.g., "Perfect. Large pepperoni pizza, anything else?") and ask a follow-up question like "What else can I get you?" - CRITICAL: WAIT for them to finish speaking COMPLETELY before responding. NEVER interrupt. NEVER say "take your time" or similar phrases. IMPORTANT: Once you have asked for the order and they have provided items, NEVER ask "What would you like to order?" again. Instead, if you need something more, ask "What else can I get you?" or "Anything else?"'
+                          text: 'The customer just called. You MUST immediately greet them by saying the COMPLETE sentence: "Thanks for calling Uncle Sal\'s Pizza. What would you like to order?" - FINISH THE ENTIRE SENTENCE. After they order something and finish speaking COMPLETELY, ALWAYS confirm what you heard (e.g., "Perfect. Large pepperoni pizza, anything else?") and ask a follow-up question like "What else can I get you?" - CRITICAL: WAIT for them to finish speaking COMPLETELY before responding. NEVER interrupt. NEVER say "take your time" or similar phrases. IMPORTANT: Once you have asked for the order and they have provided items, NEVER ask "What would you like to order?" again. Instead, if you need something more, ask "What else can I get you?" or "Anything else?" - If the user\'s speech was inaudible, empty, or only background noise, say NOTHING. Do not say "I didn\'t catch that," "Sorry?," or repeat the question. Simply wait for them to speak again.'
                         }
                       ]
                     }
@@ -2925,6 +2943,17 @@ wss.on('connection', (ws, req) => {
                 }
               }
               return; // Exit early - do NOT allow this response
+            }
+            
+            // CRITICAL: User said nothing (empty/filler transcript)—cancel so we don't repeat or say "I didn't catch that"
+            if (cancelNextResponse && data.response?.id) {
+              cancelNextResponse = false;
+              if (streamSid === sid) {
+                safeSendToOpenAI({ type: 'response.cancel', response_id: data.response.id }, 'cancel response - user said nothing');
+                console.log('✓ Cancelled AI response - user said nothing, avoiding repeat/prompt over silence');
+              }
+              responseInProgress = false;
+              return;
             }
             
             responseInProgress = true; // Mark that a response is in progress
@@ -3566,6 +3595,12 @@ wss.on('connection', (ws, req) => {
             break;
             
           case 'conversation.item.input_audio_transcription.completed':
+            // CRITICAL: If user said nothing (empty, noise, or only filler), cancel the upcoming AI response so we don't repeat or talk over silence
+            const transcriptTrimmed = (data.transcript || '').trim();
+            if (transcriptTrimmed.length < 2 || /^(um|uh|hmm|mm|ah|oh|err|eh)\s*$/i.test(transcriptTrimmed)) {
+              cancelNextResponse = true;
+              console.log('✓ User said nothing or only filler - will cancel AI response to avoid repeating or talking over silence');
+            }
             // User spoke - log what they said
             if (data.transcript) {
               console.log('✓ User said:', data.transcript);
@@ -5927,29 +5962,47 @@ wss.on('connection', (ws, req) => {
         });
       }
       
-      const success = await googleSheets.logOrderToGoogleSheets(cleanOrder, config);
-      if (success) {
-        console.log('✅✅✅ SUCCESSFULLY LOGGED TO GOOGLE SHEETS ✅✅✅');
-      } else {
-        console.error('❌❌❌ GOOGLE SHEETS LOGGING FAILED ❌❌❌');
-        console.error('❌ Check Google Sheets configuration:');
-        console.error('   - GOOGLE_SHEETS_CREDENTIALS_PATH:', process.env.GOOGLE_SHEETS_CREDENTIALS_PATH);
-        console.error('   - GOOGLE_SHEETS_ID:', process.env.GOOGLE_SHEETS_ID);
-        console.error('   - Service account must have edit access to the sheet');
+      // CRITICAL: Send to POS system FIRST (primary destination)
+      let posSuccess = false;
+      try {
+        console.log('📤 Sending order to POS system...');
+        posSuccess = await posSystems.sendOrderToPOS(cleanOrder, config, menuCache);
+        if (posSuccess) {
+          console.log('✅✅✅ SUCCESSFULLY SENT TO POS SYSTEM ✅✅✅');
+        } else {
+          console.warn('⚠️  POS system order creation failed or not configured - will log to Google Sheets as backup');
+        }
+      } catch (error) {
+        console.error('❌❌❌ ERROR SENDING TO POS SYSTEM ❌❌❌');
+        console.error('❌ Error:', error.message);
+        console.error('❌ Error stack:', error.stack);
+        // Continue to Google Sheets as fallback
       }
-    } catch (error) {
-      console.error('❌❌❌ ERROR LOGGING TO GOOGLE SHEETS ❌❌❌');
-      console.error('❌ Error:', error.message);
-      console.error('❌ Error stack:', error.stack);
-      console.error('❌ Full error object:', JSON.stringify(error, null, 2));
-    }
-    
-    // Send to POS system
-    try {
-      await posSystems.sendOrderToPOS(order, config);
-    } catch (error) {
-      console.error('Error sending to POS system:', error);
-    }
+      
+      // Send to Google Sheets (backup/audit trail)
+      // Only skip if POS succeeded AND Google Sheets logging is disabled
+      const enableGoogleSheets = process.env.ENABLE_GOOGLE_SHEETS_LOG !== 'false';
+      if (enableGoogleSheets) {
+        try {
+          const success = await googleSheets.logOrderToGoogleSheets(cleanOrder, config);
+          if (success) {
+            console.log('✅✅✅ SUCCESSFULLY LOGGED TO GOOGLE SHEETS (BACKUP) ✅✅✅');
+          } else {
+            console.error('❌❌❌ GOOGLE SHEETS LOGGING FAILED ❌❌❌');
+            console.error('❌ Check Google Sheets configuration:');
+            console.error('   - GOOGLE_SHEETS_CREDENTIALS_PATH:', process.env.GOOGLE_SHEETS_CREDENTIALS_PATH);
+            console.error('   - GOOGLE_SHEETS_ID:', process.env.GOOGLE_SHEETS_ID);
+            console.error('   - Service account must have edit access to the sheet');
+          }
+        } catch (error) {
+          console.error('❌❌❌ ERROR LOGGING TO GOOGLE SHEETS ❌❌❌');
+          console.error('❌ Error:', error.message);
+          console.error('❌ Error stack:', error.stack);
+          console.error('❌ Full error object:', JSON.stringify(error, null, 2));
+        }
+      } else {
+        console.log('ℹ️  Google Sheets logging disabled (ENABLE_GOOGLE_SHEETS_LOG=false)');
+      }
     
     // CRITICAL: Send to Zapier (if configured) - NON-BLOCKING, fire-and-forget
     // This MUST NEVER block the call flow - Zapier errors should NOT affect calls
