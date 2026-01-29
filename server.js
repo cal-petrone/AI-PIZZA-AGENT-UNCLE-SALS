@@ -1845,6 +1845,22 @@ app.get('/:clientSlug', (req, res, next) => {
 app.all('*', (req, res) => {
   console.warn('⚠️  Unknown route requested:', req.method, req.path);
   
+  // If it's POST (e.g. Twilio "A call comes in" pointed at base URL), capture caller phone so Media Stream can use it
+  if (req.method === 'POST' && req.body && req.body.CallSid) {
+    const callSid = req.body.CallSid;
+    const callerPhone = req.body.From || req.body.Caller || req.body.CallerId || null;
+    if (callSid) {
+      if (callerPhone) {
+        const cleanPhone = String(callerPhone).replace(/[^\d]/g, '').replace(/^1/, '').slice(-10);
+        callerPhoneNumbers.set(callSid, cleanPhone);
+        console.log('✓ [Catch-all] Stored caller phone for callSid:', callSid, '->', cleanPhone);
+      } else {
+        callerPhoneNumbers.set(callSid, 'Unknown');
+        console.log('⚠️  [Catch-all] No From/Caller in body, stored Unknown for callSid:', callSid);
+      }
+    }
+  }
+  
   // If it's POST to /incoming-call (or any POST), return TwiML
   if (req.method === 'POST' || req.path === '/incoming-call') {
     try {
@@ -2629,7 +2645,7 @@ wss.on('connection', (ws, req) => {
             {
               type: 'function',
               name: 'add_item_to_order',
-              description: 'MANDATORY: You MUST call this tool immediately when the customer orders ANY item. Do NOT just mention items in your response - you MUST call this tool to add them to the order. If customer says "large pepperoni pizza", call this tool with name="pepperoni pizza", size="large". If customer says "fries", call this tool with name="french fries". For WINGS: You MUST include the flavor parameter - if customer did not specify flavor, ASK them "What flavor would you like for your wings?" BEFORE calling this tool. DO NOT generate text responses about items without calling this tool.',
+              description: 'MANDATORY: When the customer says they WANT an item (e.g. "I\'ll have a large garlic pizza", "give me the garlic pizza", "I want fries"), you MUST call this tool immediately. Do NOT only describe the item or answer "what is X?" - ADD IT. Use the closest menu item name (e.g. "garlic pizza", "pepperoni pizza", "french fries"). If customer says "large pepperoni pizza", call with name="pepperoni pizza", size="large". If they ask "what is the garlic pizza?" use get_item_description instead; if they say they want it, use add_item_to_order. For WINGS: include flavor parameter or ask for flavor first. Never respond with only a description when they are ordering - always call this tool.',
               parameters: {
                 type: 'object',
                 properties: {
