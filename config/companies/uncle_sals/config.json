@@ -1,0 +1,9 @@
+{
+  "company_id": "uncle_sals",
+  "name": "Uncle Sal's Pizza",
+  "location": "Syracuse, NY",
+  "taxRate": 0.08,
+  "personaPath": "uncle_sals/persona.json",
+  "conversation_engine": null,
+  "phoneNumbers": []
+}

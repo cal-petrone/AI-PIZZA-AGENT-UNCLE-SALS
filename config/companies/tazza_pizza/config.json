@@ -1,0 +1,9 @@
+{
+  "company_id": "tazza_pizza",
+  "name": "Tazza Pizza",
+  "location": "",
+  "taxRate": 0.08,
+  "personaPath": "tazza_pizza/persona.json",
+  "conversation_engine": null,
+  "phoneNumbers": []
+}

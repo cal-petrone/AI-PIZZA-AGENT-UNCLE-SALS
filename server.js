@@ -97,6 +97,10 @@ const twilio = require('twilio');
 const googleSheets = require('./integrations/google-sheets');
 const posSystems = require('./integrations/pos-systems');
 
+// Multi-tenant company config and pluggable conversation engine
+const { getStoreConfig } = require('./config/companies');
+const { getConversationEngineName, createPersonaPlexEngine } = require('./src/conversation');
+
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -2099,7 +2103,9 @@ wss.on('connection', (ws, req) => {
   const calledNumber = urlParams.get('calledNumber') || urlParams.get('To');
   if (calledNumber) {
     storeConfig = getStoreConfig(calledNumber);
-    console.log('✓ Store config loaded for:', calledNumber, '-', storeConfig.name);
+    console.log('✓ Store config loaded for:', calledNumber, '-', storeConfig?.name ?? 'Default');
+  } else {
+    storeConfig = getStoreConfig(null);
   }
   
   // Handle messages from Twilio
@@ -2196,39 +2202,44 @@ wss.on('connection', (ws, req) => {
           fetch('http://127.0.0.1:7242/ingest/6a2bbb7a-af1b-4d24-9b15-1c6328457d57',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:1472',message:'Order initialized',data:{streamSid:streamSid,customerPhone:callerPhone,itemsCount:0},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
           // #endregion
           
-          console.log('✓ State reset complete - connecting to OpenAI for new call');
-          
-          // Connect to OpenAI Realtime API with retry logic
-          connectToOpenAI(streamSid, order).catch(error => {
-            console.error('❌ Error in connectToOpenAI:', error);
-            console.error('Error message:', error.message);
-            console.error('Error stack:', error.stack?.substring(0, 300));
-            
-            // CRITICAL: Retry connection with exponential backoff
-            let retryCount = 0;
-            const maxRetries = 3;
-            const retryConnection = () => {
-              if (retryCount < maxRetries) {
-                retryCount++;
-                const delay = Math.min(1000 * Math.pow(2, retryCount), 5000); // Exponential backoff, max 5s
-                console.log(`🔄 Retrying OpenAI connection (attempt ${retryCount}/${maxRetries}) in ${delay}ms...`);
-                setTimeout(() => {
-                  connectToOpenAI(streamSid, order).catch(retryError => {
-                    console.error(`❌ Retry ${retryCount} failed:`, retryError.message);
-                    if (retryCount < maxRetries) {
-                      retryConnection();
-                    } else {
-                      console.error('❌❌❌ Failed to connect to OpenAI after all retries');
-                      console.error('⚠️  Call will continue but may have limited functionality');
-                      // Keep the call alive even if OpenAI connection fails
-                    }
-                  });
-                }, delay);
-              }
-            };
-            
-            retryConnection();
-          });
+          console.log('✓ State reset complete - selecting conversation engine');
+          const engineName = getConversationEngineName(storeConfig);
+          console.log('✓ Conversation engine:', engineName, 'company_id:', storeConfig?.company_id ?? 'default');
+
+          const runDefaultEngine = () => {
+            connectToOpenAI(streamSid, order).catch(error => {
+              console.error('❌ Error in connectToOpenAI:', error);
+              console.error('Error message:', error.message);
+              console.error('Error stack:', error.stack?.substring(0, 300));
+              let retryCount = 0;
+              const maxRetries = 3;
+              const retryConnection = () => {
+                if (retryCount < maxRetries) {
+                  retryCount++;
+                  const delay = Math.min(1000 * Math.pow(2, retryCount), 5000);
+                  console.log(`🔄 Retrying OpenAI connection (attempt ${retryCount}/${maxRetries}) in ${delay}ms...`);
+                  setTimeout(() => {
+                    connectToOpenAI(streamSid, order).catch(retryError => {
+                      console.error(`❌ Retry ${retryCount} failed:`, retryError.message);
+                      if (retryCount < maxRetries) retryConnection();
+                      else console.error('❌❌❌ Failed to connect to OpenAI after all retries');
+                    });
+                  }, delay);
+                }
+              };
+              retryConnection();
+            });
+          };
+
+          if (engineName === 'personaplex') {
+            const personaplex = createPersonaPlexEngine(connectToOpenAI);
+            personaplex.startSession(streamSid, order, storeConfig || {}, {}).catch(err => {
+              console.error('[PersonaPlex] Session failed, falling back to default engine:', err?.message || err);
+              runDefaultEngine();
+            });
+          } else {
+            runDefaultEngine();
+          }
           break;
           
         case 'media':
