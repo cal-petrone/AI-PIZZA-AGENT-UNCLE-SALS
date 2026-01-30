@@ -1,0 +1,16 @@
+{
+  "name": "personaplex-gateway",
+  "version": "1.0.0",
+  "description": "Gateway: bridges AI agent (Twilio audio) to PersonaPlex. Deploy to Railway as a separate service.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.14.2"
+  }
+}
