@@ -1,0 +1,51 @@
+# Railway Environment Variables Template
+
+Copy the relevant section below and fill in the values from your client.
+
+---
+
+## Square Client Template
+
+POS_SYSTEM=square
+SQUARE_ACCESS_TOKEN=
+SQUARE_LOCATION_ID=
+SQUARE_ENVIRONMENT=production
+
+---
+
+## Toast Client Template
+
+POS_SYSTEM=toast
+TOAST_API_KEY=
+TOAST_RESTAURANT_ID=
+
+---
+
+## Clover Client Template
+
+POS_SYSTEM=clover
+CLOVER_API_TOKEN=
+CLOVER_MERCHANT_ID=
+CLOVER_ENVIRONMENT=production
+
+---
+
+## Instructions for Railway
+
+1. Go to Railway Dashboard: https://railway.app/
+2. Select your project
+3. Click "Variables" tab (left sidebar)
+4. Click "New Variable" for each variable above
+5. Copy the Key and Value from the template
+6. Click "Add"
+7. Railway will auto-deploy (wait 1-2 minutes)
+
+---
+
+## Notes
+
+- Replace empty values with actual credentials from client
+- SQUARE_ENVIRONMENT and CLOVER_ENVIRONMENT should be "production" for live systems
+- Use "sandbox" only for testing
+- Keep these credentials secure - never commit to Git
+

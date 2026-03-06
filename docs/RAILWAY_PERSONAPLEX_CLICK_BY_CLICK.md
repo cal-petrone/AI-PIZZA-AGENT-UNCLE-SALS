@@ -2,9 +2,14 @@
 
 The repo now includes a **PersonaPlex gateway** in `services/personaplex-gateway/`. Do **Part A** to deploy the gateway, then **Part B** to point your agent at it. Use your **base/DEMO** project if you want all clients to get it.
 
+**Who does what:**  
+- **Browser / you** — You do this in the Railway (or ngrok) website. Cursor cannot do it.  
+- **Local terminal – you run** — You run these in your Mac terminal. You can ask Cursor to run terminal commands on your Mac when the step says **Cursor can run** (e.g. `ngrok http 8998` Cursor can start for you; pasting the URL into Railway you do in the browser).
+
 ---
 
-## Part A: Deploy the gateway (new Railway service)
+## Part A: Deploy the gateway (new Railway service)  
+**Browser / you**
 
 ### A1. Open Railway
 
@@ -43,7 +48,8 @@ The repo now includes a **PersonaPlex gateway** in `services/personaplex-gateway
 
 ---
 
-## Part B: Point your agent at the gateway
+## Part B: Point your agent at the gateway  
+**Browser / you**
 
 ### B1. Open your agent service
 
@@ -93,7 +99,9 @@ The repo now includes a **PersonaPlex gateway** in `services/personaplex-gateway
 
 ## Connecting PersonaPlex (NVIDIA) for real voice
 
-To hear PersonaPlex (NVIDIA) on the call:
+**Want PersonaPlex always on (24/7)?** See **`docs/PERSONAPLEX_ALWAYS_ON.md`** for steps to run it on a cloud VM with systemd so Railway can reach it without your Mac or ngrok.
+
+To hear PersonaPlex (NVIDIA) on the call (local or cloud):
 
 1. Run PersonaPlex somewhere (e.g. your machine with GPU, or a cloud GPU). See `docs/PERSONAPLEX_PHONE_SETUP.md` Part 3.
 2. Expose its WebSocket (e.g. with ngrok: `ngrok http 8998` and use the `wss://` URL for the WebSocket path PersonaPlex uses).
@@ -101,3 +109,31 @@ To hear PersonaPlex (NVIDIA) on the call:
 4. Redeploy the gateway if needed.
 
 The gateway in this repo expects PersonaPlex to speak the same JSON format: `{ type: 'audio', payload: '<base64>' }`. If PersonaPlex uses a different protocol, the gateway may need a small update to translate (see `services/personaplex-gateway/index.js`).
+
+---
+
+## From here (PersonaPlex server already running)
+
+**Who does what:** Step 1 = **Browser / you**. Step 2 = **Local terminal** (you run `ngrok http 8998` — or ask Cursor to run it). Step 3 = **Browser / you** (Railway Variables). Step 4 = you test the call.
+
+If PersonaPlex is running locally and you see “loading moshi” / “mini loaded” in the terminal:
+
+1. **Confirm in the browser**  
+   Wait until the server prints something like **“Access the Web UI at https://localhost:8998”**. Open **https://localhost:8998** in your browser, accept the certificate warning, and confirm the PersonaPlex UI loads.
+
+2. **Expose it with ngrok**  
+   In a **new** terminal (leave PersonaPlex running in the first):  
+   - Install ngrok if needed: `brew install ngrok` (or download from ngrok.com).  
+   - Run: `ngrok http 8998`  
+   - Copy the **HTTPS** URL ngrok shows (e.g. `https://abc123.ngrok-free.app`).  
+   - The WebSocket URL for PersonaPlex is that host with **secure WebSocket** and path **`/api/chat`**, e.g.  
+     **`wss://abc123.ngrok-free.app/api/chat`**
+
+3. **Point the gateway at PersonaPlex**  
+   - In Railway, open the **gateway** service (not the agent).  
+   - Go to **Variables**.  
+   - Set **PERSONAPLEX_WEBSOCKET_URL** = `wss://YOUR_NGROK_HOST/api/chat` (use the URL from step 2).  
+   - Save. Railway will redeploy the gateway.
+
+4. **Test a call**  
+   Call your Twilio number. The agent will use the gateway, and the gateway will forward audio to your local PersonaPlex. You should hear PersonaPlex on the call (as long as PersonaPlex and ngrok are still running).

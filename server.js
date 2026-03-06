@@ -178,6 +178,9 @@ console.log('- NGROK_URL:', process.env.NGROK_URL || 'Not set (will use request 
 // Store active order sessions
 const activeOrders = new Map(); // streamSid -> order object
 
+// PersonaPlex gateway WebSocket sessions (streamSid -> { gatewayWs, twilioWs })
+const personaplexSessions = new Map();
+
 // ============================================================================
 // TOKEN OPTIMIZATION v2: Aggressive Token Management System
 // ============================================================================
@@ -427,6 +430,13 @@ function createConversationSummary(order) {
 function getCoreRulesPrompt() {
   return `Pizza assistant for Uncle Sal's. Max 1-2 short sentences per response.
 
+VOICE & TONE - BE WARM AND HUMAN:
+- Sound conversational, not robotic or scripted. Use casual phrases: "Great choice!", "Awesome, got that!", "Perfect!"
+- When taking orders use natural filler: "Got it, one large pepperoni..." then confirm and ask what else.
+- If customer corrects or interrupts: "Oh no worries, let me change that!" and fix it. Never be defensive.
+- Before finalizing, read back the full order naturally (e.g., "So that's one large pepperoni, garlic knots, and a soda — pickup. Sound good?")
+- If they're quiet or unclear: "Sorry, I didn't catch that — did you want to add anything else?" (gentle re-prompt, never repeat robotically.)
+
 CRITICAL TOOL REQUIREMENTS - YOU MUST CALL THESE TOOLS:
 1. add_item_to_order - Call IMMEDIATELY when customer orders ANY food item (include "flavor" for wings!)
 2. set_delivery_method - Call when customer says "pickup" or "delivery"
@@ -440,13 +450,22 @@ ORDER FLOW (follow this EXACT sequence):
 2. When customer orders item → Check requirements:
    - IF item has multiple sizes AND customer didn't specify size → Ask "What size would you like?" (DO NOT call add_item_to_order yet)
    - IF item is WINGS and customer didn't specify FLAVOR → Ask "What flavor would you like for your wings?" (DO NOT call add_item_to_order yet)
-   - IF size/flavor provided OR not needed → Call add_item_to_order (with flavor param for wings!) → Confirm "Got it, [item]. Anything else?"
+   - IF size/flavor provided OR not needed → Call add_item_to_order (with flavor param for wings!) → Confirm warmly ("Got it, [item]. Anything else?") → Then ONE upsell (see UPSELLING)
 3. Keep taking items until customer says done ("that's it", "all set")
 4. Say exact total → Ask "Pickup or delivery?"
 5. When customer says pickup/delivery → Call set_delivery_method
 6. IF DELIVERY → Ask "What's the delivery address?" → When given address → Call set_address → Confirm address
 7. Ask "And what name for the order?" → When given name → Call set_customer_name → Confirm name
-8. Call confirm_order → Say "Awesome, thanks for ordering with Uncle Sal's today!"
+8. Confirm full order back naturally, then Call confirm_order → Close warmly (see ORDER CLOSING)
+
+UPSELLING (soft, one at a time, never pushy):
+- After each main item, suggest ONE relevant add-on only. Use: "Would you like to add [X] for just $Y more?"
+- Pizza ordered → suggest a side (breadsticks, wings, garlic knots). Side ordered → suggest a drink. Single pizza only → suggest a second pizza deal if applicable. Near end of order (customer almost done) → "We also have [dessert] tonight if you want something sweet!"
+- If customer declines: accept immediately and move on. Never suggest the same category again on that call. Max one upsell per category per call.
+
+ORDER CLOSING:
+- End with a friendly summary and estimated time (e.g., "That'll be ready in about 20 minutes" or "See you in 15–20!").
+- Close warmly: "You're all set! See you soon!" or "Awesome, thanks for ordering — see you soon!"
 
 WING ORDERING RULES (CRITICAL - FOLLOW THIS EXACT ORDER):
 1. PIECE COUNT MUST BE ASKED FIRST (before flavor):
@@ -474,7 +493,7 @@ WING ORDERING RULES (CRITICAL - FOLLOW THIS EXACT ORDER):
 
 MULTI-ITEM ORDERS:
 - Customers can order as many items as they want - NO LIMIT
-- After each item, ask "Anything else?" or "What else can I get you?"
+- After each item, ask "Anything else?" or "What else can I get you?" (after any single upsell for that item)
 - Keep track of ALL items ordered
 - Only read back the full order when customer says they're done
 
@@ -494,9 +513,7 @@ WING REQUIREMENTS (ORDER MATTERS):
 - FLAVOR SECOND: Only ask flavor AFTER piece count is selected
 - DRESSING THIRD: Ask dressing after flavor is selected
 - Do NOT skip any step
-- ITEM DESCRIPTIONS: Use get_item_description tool - do NOT guess descriptions
-
-CONFIRM PHRASES: "Got it.", "Perfect.", "Sure thing."`;
+- ITEM DESCRIPTIONS: Use get_item_description tool - do NOT guess descriptions`;
 }
 
 /**
@@ -2233,17 +2250,62 @@ wss.on('connection', (ws, req) => {
 
           if (engineName === 'personaplex') {
             const personaplex = createPersonaPlexEngine(connectToOpenAI);
-            personaplex.startSession(streamSid, order, storeConfig || {}, {}).catch(err => {
-              console.error('[PersonaPlex] Session failed, falling back to default engine:', err?.message || err);
-              runDefaultEngine();
-            });
+            personaplex.startSession(streamSid, order, storeConfig || {}, {})
+              .then((result) => {
+                const wsUrl = result?.wsUrl;
+                if (wsUrl && typeof wsUrl === 'string' && wsUrl.startsWith('wss://')) {
+                  try {
+                    const gatewayWs = new WebSocket(wsUrl);
+                    gatewayWs.on('open', () => {
+                      personaplexSessions.set(streamSid, { gatewayWs, twilioWs: ws });
+                      console.log('[PersonaPlex] Gateway WebSocket connected for stream', streamSid);
+                    });
+                    gatewayWs.on('message', (data) => {
+                      try {
+                        const msg = JSON.parse(data.toString());
+                        if (msg.type === 'audio' && msg.payload && ws && ws.readyState === 1) {
+                          ws.send(JSON.stringify({ event: 'media', media: { payload: msg.payload }, streamSid }));
+                        }
+                      } catch (_) {}
+                    });
+                    gatewayWs.on('close', () => {
+                      personaplexSessions.delete(streamSid);
+                    });
+                    gatewayWs.on('error', (err) => {
+                      console.warn('[PersonaPlex] Gateway WS error:', err?.message);
+                      personaplexSessions.delete(streamSid);
+                      runDefaultEngine();
+                    });
+                  } catch (err) {
+                    console.error('[PersonaPlex] Failed to open gateway WebSocket:', err?.message);
+                    runDefaultEngine();
+                  }
+                } else {
+                  if (!wsUrl) runDefaultEngine();
+                }
+              })
+              .catch(err => {
+                console.error('[PersonaPlex] Session failed, falling back to default engine:', err?.message || err);
+                runDefaultEngine();
+              });
           } else {
             runDefaultEngine();
           }
           break;
           
         case 'media':
-          // Forward audio from Twilio to OpenAI
+          // PersonaPlex: forward audio to gateway WebSocket when this stream uses PersonaPlex
+          const ppSession = personaplexSessions.get(streamSid);
+          if (ppSession && ppSession.gatewayWs && ppSession.gatewayWs.readyState === WebSocket.OPEN) {
+            try {
+              ppSession.gatewayWs.send(JSON.stringify({ type: 'audio', payload: data.media.payload }));
+            } catch (e) {
+              console.warn('[PersonaPlex] Failed to send audio to gateway:', e?.message);
+            }
+            return;
+          }
+          
+          // Default engine: Forward audio from Twilio to OpenAI
           // If OpenAI isn't ready yet, queue the audio
           if (!openaiClient || openaiClient.readyState !== WebSocket.OPEN || !openaiReady) {
             // Queue audio while OpenAI is connecting
@@ -2281,6 +2343,11 @@ wss.on('connection', (ws, req) => {
           
         case 'stop':
           console.log('Stream stopped:', streamSid);
+          const pp = personaplexSessions.get(streamSid);
+          if (pp && pp.gatewayWs) {
+            try { pp.gatewayWs.close(); } catch (_) {}
+            personaplexSessions.delete(streamSid);
+          }
           
           // #region agent log
           // DEBUG: Log order state at stream stop

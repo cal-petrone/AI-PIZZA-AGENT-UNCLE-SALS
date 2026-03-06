@@ -65,11 +65,13 @@ class PersonaPlexConversationEngine extends IConversationEngine {
         clearTimeout(timeoutId);
 
         if (response.ok) {
-          console.log(`[PersonaPlex] Gateway session started. company_id=${companyId} sessionId=${sessionId} engine=${engineUsed}`);
-          // Gateway is responsible for full duplex; we do not run fallback here.
-          // If the gateway only does HTTP and expects us to stream audio, we would need
-          // to handle that here. For now we treat 2xx as "gateway handles the call".
-          return;
+          let body = {};
+          try {
+            body = await response.json();
+          } catch (_) {}
+          const wsUrl = body.wsUrl || null;
+          console.log(`[PersonaPlex] Gateway session started. company_id=${companyId} sessionId=${sessionId} engine=${engineUsed} wsUrl=${wsUrl ? 'yes' : 'no'}`);
+          return { wsUrl };
         }
         lastError = new Error(`Gateway returned ${response.status}`);
       } catch (err) {
